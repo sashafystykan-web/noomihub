@@ -27,14 +27,12 @@
     </section>
 
     <section class="view" id="view-upload" data-view-panel="upload">
-      <div class="page-head"><div><span class="overline">ПУБЛИКАЦИЯ</span><h1>Новый мод</h1><p class="page-subtitle">Отправь мод на проверку</p></div></div>
-      <div class="form-layout"><form id="upload-form" class="surface upload-form">
-        <div class="form-row"><label>Название<input name="title" required maxlength="120" placeholder="Например, Neon Gym"></label><label>Версия игры<input name="game_version" maxlength="40" placeholder="2.2.0"></label></div>
-        <label>Теги<input name="tags" maxlength="200" placeholder="скин, карта, физика"></label>
-        <label>Описание<textarea name="description" required maxlength="2000" rows="5" placeholder="Что меняет этот мод?"></textarea></label>
-        <label class="file-drop" id="file-drop"><input type="file" name="file" id="file-input" required><span class="upload-glyph">↑</span><b id="file-label">Выбери файл мода</b><small id="file-size">ZIP, APK или другой файл · до 50 МБ</small></label>
-        <div class="form-footer"><span class="form-status" id="upload-status"></span><button class="filled-button" type="submit">Отправить на проверку <span>→</span></button></div>
-      </form><aside class="form-aside"><div class="aside-mark">✳</div><h2>Публикация</h2><p>После проверки мод появится в каталоге.</p></aside></div>
+      <div class="form-layout"><div class="surface upload-form bot-submit-card">
+        <span class="upload-glyph">✳</span><h2>Подай мод через бота</h2>
+        <p>Бот спросит название, описание и версию игры, а затем попросит прислать файл. Файл отправится прямо в Telegram.</p>
+        <a class="filled-button" id="submit-via-bot" href="https://t.me/" target="_blank" rel="noreferrer">Открыть бота <span>→</span></a>
+        <p class="form-status" id="bot-submit-status"></p>
+      </div><aside class="form-aside"><div class="aside-mark">✳</div><h2>Публикация</h2><p>После проверки мод появится в каталоге.</p></aside></div>
     </section>
 
     <section class="view" id="view-profile" data-view-panel="profile">

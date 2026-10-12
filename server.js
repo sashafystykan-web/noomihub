@@ -3,7 +3,6 @@ import crypto from "node:crypto";
 import express from "express";
 import jwt from "jsonwebtoken";
 import { MongoClient } from "mongodb";
-import multer from "multer";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,7 +17,6 @@ const channelUsername = process.env.TELEGRAM_CHANNEL_USERNAME || "";
 const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET || "";
 const jwtSecret = process.env.JWT_SECRET || "local-development-secret-change-me";
 const moderatorIds = new Set((process.env.MODERATOR_TELEGRAM_IDS || "").split(",").map((id) => id.trim()).filter(Boolean));
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024, files: 1 } });
 let db;
 let telegramWebhookReady = false;
 
@@ -47,7 +45,7 @@ app.get("/api/health", (_req, res) => res.json({
   telegram_configured: Boolean(botToken && botUsername),
   telegram_webhook: telegramWebhookReady,
 }));
-app.get("/api/config", (_req, res) => res.json({ channel_username: channelUsername, bot_ready: Boolean(botUsername && telegramWebhookReady) }));
+app.get("/api/config", (_req, res) => res.json({ channel_username: channelUsername, bot_ready: Boolean(botUsername && telegramWebhookReady), submission_bot_url: botUsername ? `https://t.me/${botUsername}?start=submit` : null }));
 
 app.get("/api/mods", requireDb, async (req, res, next) => {
   try {
@@ -114,49 +112,6 @@ function submissionCaption(data) {
   ].join("\n").slice(0, 1000);
 }
 
-app.post("/api/submissions", requireDb, requireAuth, upload.single("file"), async (req, res, next) => {
-  try {
-    if (!botToken || !reviewChannelId) return res.status(503).json({ error: "Не настроен канал модерации Telegram" });
-    if (!req.file) return res.status(400).json({ error: "Прикрепи файл мода" });
-    const title = String(req.body.title || "").trim().slice(0, 120);
-    const description = String(req.body.description || "").trim().slice(0, 2000);
-    const gameVersion = String(req.body.game_version || "").trim().slice(0, 40);
-    const tags = String(req.body.tags || "").split(/[,;]/).map((tag) => tag.trim().slice(0, 32)).filter(Boolean).slice(0, 10);
-    if (!title || !description) return res.status(400).json({ error: "Заполни название и описание" });
-
-    const submissionId = crypto.randomUUID();
-    const caption = submissionCaption({ title, author: req.user.username ? `@${req.user.username}` : req.user.display_name, description, game_version: gameVersion, tags });
-    const form = new FormData();
-    form.set("chat_id", reviewChannelId);
-    form.set("caption", caption);
-    form.set("document", new Blob([req.file.buffer], { type: req.file.mimetype || "application/octet-stream" }), req.file.originalname);
-    const tgResponse = await fetch(`https://api.telegram.org/bot${botToken}/sendDocument`, { method: "POST", body: form });
-    const tgResult = await tgResponse.json();
-    if (!tgResponse.ok || !tgResult.ok) {
-      console.error(`Telegram upload failed: ${tgResult.error_code || tgResponse.status} ${tgResult.description || ""}`);
-      return res.status(502).json({ error: "Telegram не принял файл. Проверь размер и настройки бота." });
-    }
-    const sent = tgResult.result;
-    await db.collection("submissions").insertOne({
-      submission_id: submissionId,
-      telegram_id: req.user.telegram_id,
-      author: req.user.username ? `@${req.user.username}` : req.user.display_name || "Игрок",
-      title,
-      description,
-      game_version: gameVersion || "Не указана",
-      tags: tags.length ? tags : ["Другое"],
-      file_id: sent.document?.file_id,
-      file_name: sent.document?.file_name || req.file.originalname,
-      file_size: sent.document?.file_size || req.file.size,
-      review_message_id: sent.message_id,
-      caption,
-      status: "pending",
-      created_at: new Date(),
-    });
-    res.status(201).json({ ok: true, submission_id: submissionId, status: "pending" });
-  } catch (error) { next(error); }
-});
-
 app.get("/api/moderation/pending", requireDb, requireAuth, requireModerator, async (_req, res, next) => {
   try {
     const submissions = await db.collection("submissions").find(
@@ -211,10 +166,10 @@ app.post("/api/moderation/:id/reject", requireDb, requireAuth, requireModerator,
   } catch (error) { next(error); }
 });
 
-async function sendBotMessage(chatId, text) {
+async function sendBotMessage(chatId, text, extra = {}) {
   if (!botToken) throw new Error("TELEGRAM_BOT_TOKEN is missing");
   const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text }),
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text, ...extra }),
   });
   const result = await response.json();
   if (!response.ok || !result.ok) throw new Error(`Telegram sendMessage failed (${result.error_code || response.status})`);
@@ -222,33 +177,104 @@ async function sendBotMessage(chatId, text) {
 
 async function handleUpdate(update) {
   const message = update.message;
-  if (message) {
-    const startCommand = message.text?.match(/^\/start(?:@\w+)?(?:\s+([\w-]+))?/);
-    if (startCommand) {
-      const match = startCommand[1];
-      if (!match) {
-        await sendBotMessage(message.chat.id, "Привет! Чтобы создать аккаунт NoomiHub, открой сайт и нажми «Войти через Telegram». Вернись сюда по ссылке с сайта и нажми Start.");
-        return;
-      }
-      if (!db) {
-        await sendBotMessage(message.chat.id, "Сайт пока не подключён к базе данных. Попробуй войти позже.");
-        return;
-      }
-      const telegramUser = message.from;
+  if (!message || message.chat.type !== "private" || !message.from) return;
+  const telegramUser = message.from;
+  const chatId = message.chat.id;
+  if (!db) return sendBotMessage(chatId, "База данных сайта пока недоступна. Попробуй позже.");
+  const displayName = [telegramUser.first_name, telegramUser.last_name].filter(Boolean).join(" ") || telegramUser.username || "Игрок";
+  await db.collection("users").updateOne({ telegram_id: telegramUser.id }, {
+    $set: { display_name: displayName, username: telegramUser.username || null, updated_at: new Date() },
+    $setOnInsert: { created_at: new Date() },
+  }, { upsert: true });
+
+  const startCommand = message.text?.match(/^\/start(?:@\w+)?(?:\s+([\w-]+))?/);
+  const submitCommand = message.text?.match(/^\/(?:submit|new)(?:@\w+)?(?:\s|$)/);
+  if (startCommand || submitCommand) {
+    const argument = startCommand?.[1];
+    if (argument === "submit" || submitCommand) {
+      if (!botToken || !reviewChannelId) return sendBotMessage(chatId, "Подача модов пока не настроена. Сообщи администратору сайта.");
+      await db.collection("submission_drafts").updateOne({ telegram_id: telegramUser.id }, {
+        $set: { telegram_id: telegramUser.id, stage: "title", updated_at: new Date() },
+        $unset: { title: "", description: "", game_version: "", tags: "" },
+      }, { upsert: true });
+      return sendBotMessage(chatId, "Подача мода · шаг 1 из 5\nНапиши название. Для отмены отправь /cancel.");
+    }
+    if (argument) {
       const ticket = await db.collection("auth_tickets").updateOne(
-        { ticket: match, expires_at: { $gt: new Date() } }, { $set: { telegram_id: telegramUser.id } },
+        { ticket: argument, expires_at: { $gt: new Date() } }, { $set: { telegram_id: telegramUser.id } },
       );
-      if (ticket.matchedCount) {
-        const displayName = [telegramUser.first_name, telegramUser.last_name].filter(Boolean).join(" ") || telegramUser.username || "Игрок";
-        await db.collection("users").updateOne({ telegram_id: telegramUser.id }, {
-          $set: { display_name: displayName, username: telegramUser.username || null, updated_at: new Date() },
-          $setOnInsert: { created_at: new Date() },
-        }, { upsert: true });
-        await sendBotMessage(telegramUser.id, "Готово! Вернись на сайт — аккаунт NoomiHub подключён.");
-      } else await sendBotMessage(telegramUser.id, "Ссылка истекла или уже использована. Создай новую на сайте.");
+      if (ticket.matchedCount) return sendBotMessage(chatId, "Готово! Вернись на сайт — аккаунт NoomiHub подключён.");
+      return sendBotMessage(chatId, "Ссылка входа истекла или уже использована. Создай новую на сайте.");
+    }
+    return sendBotMessage(chatId, "Привет! Чтобы подать мод, отправь /submit. Для входа на сайт нажми «Войти через Telegram» и вернись сюда по ссылке.");
+  }
+
+  if (message.text?.match(/^\/cancel(?:@\w+)?(?:\s|$)/)) {
+    await db.collection("submission_drafts").deleteOne({ telegram_id: telegramUser.id });
+    return sendBotMessage(chatId, "Подачу отменил.");
+  }
+
+  const draft = await db.collection("submission_drafts").findOne({ telegram_id: telegramUser.id });
+  if (!draft) return;
+  if (draft.stage === "file") {
+    const document = message.document;
+    if (!document) return sendBotMessage(chatId, "Пришли файл мода как документ (скрепка → Файл). Для отмены /cancel.");
+    if (!reviewChannelId) return sendBotMessage(chatId, "Канал проверки не настроен. Сообщи администратору сайта.");
+    const author = telegramUser.username ? `@${telegramUser.username}` : displayName;
+    const submissionId = crypto.randomUUID();
+    const submission = {
+      submission_id: submissionId,
+      telegram_id: telegramUser.id,
+      author,
+      title: draft.title,
+      description: draft.description,
+      game_version: draft.game_version || "Не указана",
+      tags: draft.tags.length ? draft.tags : ["Другое"],
+      file_id: document.file_id,
+      file_name: document.file_name || "mod",
+      file_size: document.file_size || 0,
+      caption: submissionCaption({ title: draft.title, author, description: draft.description, game_version: draft.game_version, tags: draft.tags }),
+      status: "pending",
+      created_at: new Date(),
+    };
+    try {
+      const copied = await telegramRequest("copyMessage", {
+        chat_id: reviewChannelId,
+        from_chat_id: chatId,
+        message_id: message.message_id,
+        caption: submission.caption,
+      });
+      submission.review_message_id = copied.message_id;
+      await db.collection("submissions").insertOne(submission);
+      await db.collection("submission_drafts").deleteOne({ telegram_id: telegramUser.id });
+      return sendBotMessage(chatId, "Заявка отправлена на модерацию. Статус появится в профиле на сайте.");
+    } catch (error) {
+      console.error(`Submission copy failed: ${error.message}`);
+      return sendBotMessage(chatId, "Не получилось передать файл на проверку. Попробуй отправить его ещё раз чуть позже.");
     }
   }
 
+  if (!message.text) return sendBotMessage(chatId, "Ответь текстом на вопрос бота. Для отмены /cancel.");
+  const value = message.text.trim();
+  if (draft.stage === "title") {
+    if (!value || value.length > 120) return sendBotMessage(chatId, "Название должно быть от 1 до 120 символов. Попробуй ещё раз.");
+    await db.collection("submission_drafts").updateOne({ telegram_id: telegramUser.id }, { $set: { title: value, stage: "description", updated_at: new Date() } });
+    return sendBotMessage(chatId, "Шаг 2 из 5\nКоротко опиши мод (до 2000 символов).");
+  }
+  if (draft.stage === "description") {
+    if (!value || value.length > 2000) return sendBotMessage(chatId, "Описание должно быть от 1 до 2000 символов. Попробуй ещё раз.");
+    await db.collection("submission_drafts").updateOne({ telegram_id: telegramUser.id }, { $set: { description: value, stage: "game_version", updated_at: new Date() } });
+    return sendBotMessage(chatId, "Шаг 3 из 5\nУкажи версию игры, например 2.2.0. Если не знаешь — отправь «-».");
+  }
+  if (draft.stage === "game_version") {
+    await db.collection("submission_drafts").updateOne({ telegram_id: telegramUser.id }, { $set: { game_version: value === "-" ? "" : value.slice(0, 40), stage: "tags", updated_at: new Date() } });
+    return sendBotMessage(chatId, "Шаг 4 из 5\nУкажи теги через запятую (например: скин, карта). Если тегов нет — отправь «-».");
+  }
+  if (draft.stage === "tags") {
+    const tags = value === "-" ? [] : value.split(/[,;]/).map((tag) => tag.trim().slice(0, 32)).filter(Boolean).slice(0, 10);
+    await db.collection("submission_drafts").updateOne({ telegram_id: telegramUser.id }, { $set: { tags, stage: "file", updated_at: new Date() } });
+    return sendBotMessage(chatId, "Шаг 5 из 5\nПришли файл мода как документ (скрепка → Файл). Файл уйдёт в канал проверки, не на сервер сайта.");
+  }
 }
 
 async function telegramRequest(method, body = {}) {
@@ -302,9 +328,6 @@ app.post("/telegram/webhook", async (req, res, next) => {
 
 app.use((error, _req, res, _next) => {
   console.error(`Request failed: ${error.message}`);
-  if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
-    return res.status(413).json({ error: "Размер файла превышает лимит 50 МБ" });
-  }
   res.status(500).json({ error: "Internal server error" });
 });
 
@@ -316,6 +339,7 @@ async function start() {
     await Promise.all([
       db.collection("users").createIndex({ telegram_id: 1 }, { unique: true }),
       db.collection("auth_tickets").createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 }),
+      db.collection("submission_drafts").createIndex({ updated_at: 1 }, { expireAfterSeconds: 86400 }),
       db.collection("mods").createIndex({ published_at: -1 }),
       db.collection("mods").createIndex({ title: "text", description: "text", tags: "text" }),
     ]);

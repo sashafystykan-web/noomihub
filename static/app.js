@@ -6,6 +6,7 @@ let mods = [];
 let currentUser = null;
 let toastTimer;
 let searchTimer;
+let submissionBotUrl = null;
 
 function escapeHtml(value = "") {
   return String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
@@ -29,10 +30,6 @@ async function api(url, options = {}) {
 
 function setView(view) {
   if (view === "moderation" && !currentUser?.is_moderator) view = "catalog";
-  if (view === "upload" && !token()) {
-    notify("Войди через Telegram, чтобы отправить мод.");
-    startLogin();
-  }
   $$("[data-view-panel]").forEach(panel => panel.classList.toggle("active", panel.dataset.viewPanel === view));
   $$("[data-view]").forEach(button => button.classList.toggle("active", button.dataset.view === view));
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -181,49 +178,30 @@ document.addEventListener("click", event => {
     .catch(error => { actionButton.disabled = false; notify(error.message); });
 });
 
-const fileInput = $("#file-input");
-fileInput.addEventListener("change", () => {
-  const file = fileInput.files[0];
-  $("#file-label").textContent = file?.name || "Выбери файл мода";
-  $("#file-size").textContent = file ? `${(file.size / 1048576).toFixed(1)} МБ` : "ZIP, APK или другой файл · до 50 МБ";
-});
-const drop = $("#file-drop");
-for (const eventName of ["dragenter", "dragover"]) drop.addEventListener(eventName, event => { event.preventDefault(); drop.classList.add("dragover"); });
-for (const eventName of ["dragleave", "drop"]) drop.addEventListener(eventName, event => { event.preventDefault(); drop.classList.remove("dragover"); });
-drop.addEventListener("drop", event => { if (event.dataTransfer.files.length) { fileInput.files = event.dataTransfer.files; fileInput.dispatchEvent(new Event("change")); } });
-
-$("#upload-form").addEventListener("submit", async event => {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const file = fileInput.files[0];
-  const status = $("#upload-status");
-  const submitButton = $(".filled-button", form);
-  if (!file) { status.textContent = "Выбери файл."; status.className = "form-status error"; return; }
-  if (file.size > 50 * 1024 * 1024) { status.textContent = "Файл больше лимита Telegram — 50 МБ."; status.className = "form-status error"; return; }
-  const body = new FormData(form);
-  submitButton.disabled = true;
-  submitButton.innerHTML = "Загрузка…";
-  status.textContent = "";
-  status.className = "form-status";
+async function loadConfig() {
+  const link = $("#submit-via-bot");
+  const status = $("#bot-submit-status");
   try {
-    await api("/api/submissions", { method: "POST", body });
-    form.reset();
-    $("#file-label").textContent = "Выбери файл мода";
-    $("#file-size").textContent = "ZIP, APK или другой файл · до 50 МБ";
-    notify("Мод отправлен на проверку.");
-    setView("profile");
-    await loadMySubmissions();
-  } catch (error) {
-    status.textContent = error.message;
-    status.className = "form-status error";
-  } finally {
-    submitButton.disabled = false;
-    submitButton.innerHTML = 'Отправить на проверку <span>→</span>';
+    const config = await api("/api/config");
+    submissionBotUrl = config.submission_bot_url;
+    if (submissionBotUrl) link.href = submissionBotUrl;
+    if (!config.bot_ready) {
+      link.removeAttribute("href");
+      link.setAttribute("aria-disabled", "true");
+      link.classList.add("disabled");
+      status.textContent = "Бот пока не подключён.";
+    }
+  } catch {
+    link.removeAttribute("href");
+    link.setAttribute("aria-disabled", "true");
+    link.classList.add("disabled");
+    status.textContent = "Не удалось подключиться к боту.";
   }
-});
+}
 
 document.addEventListener("keydown", event => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setView("catalog"); $("#search").focus(); }
 });
 
+loadConfig();
 loadUser().finally(loadCatalog);
