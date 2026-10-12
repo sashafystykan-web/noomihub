@@ -3,8 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#101012">
   <title>NoomiHub — моды NoomiClone</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet"><link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header class="appbar">
@@ -24,6 +23,14 @@
       <div class="result-line"><span id="result-count">Загрузка…</span></div>
       <div class="mod-grid" id="mod-grid"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
       <div class="empty-state hidden" id="catalog-empty"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg><h2>Пока пусто</h2><button class="tonal-button" data-nav="upload">Добавить мод</button></div>
+    </section>
+
+    <section class="view" id="view-mod" data-view-panel="mod">
+      <div class="page-head detail-head"><button class="icon-button" id="detail-back" aria-label="Назад в каталог" title="Назад"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6M9 12h11"/></svg></button><span class="tag" id="detail-category"></span></div>
+      <div class="detail-layout">
+        <div class="detail-gallery"><div class="gallery-main" id="gallery-main"><img id="detail-image" alt="" hidden><div class="gallery-placeholder" id="gallery-placeholder"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="m21 15-5-5L5 20"/></svg></div><button class="gallery-arrow previous" id="gallery-prev" aria-label="Предыдущий скриншот"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button><button class="gallery-arrow next" id="gallery-next" aria-label="Следующий скриншот"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button></div><div class="gallery-thumbs" id="detail-thumbs"></div></div>
+        <div class="detail-content"><div class="detail-tags" id="detail-tags"></div><h1 id="detail-title"></h1><div class="detail-author"><span class="detail-avatar" id="detail-avatar"></span><span id="detail-author-name"></span></div><p class="detail-description" id="detail-description"></p><div class="detail-meta"><span>Версия игры</span><b id="detail-version"></b><span>Размер</span><b id="detail-size"></b></div><a class="filled-button detail-download" id="detail-download" target="_blank" rel="noreferrer">Скачать в Telegram <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></div>
+      </div>
     </section>
 
     <section class="view" id="view-upload" data-view-panel="upload">

@@ -15,6 +15,8 @@ const icon = (name) => {
   const paths = {
     mod: '<path d="M5 7.5 12 4l7 3.5v9L12 20l-7-3.5z"/><path d="m5.5 7.8 6.5 3.3 6.5-3.3M12 11v8.5"/>',
     download: '<path d="M12 4v11m-4-4 4 4 4-4M5 19h14"/>',
+    user: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c.6-3.4 3.2-5 7-5s6.4 1.6 7 5"/>',
+    image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="m21 15-5-5L5 20"/>',
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.mod}</svg>`;
 };
@@ -62,8 +64,12 @@ async function loadCatalog() {
     grid.classList.toggle("hidden", mods.length === 0);
     grid.innerHTML = mods.map((mod, index) => {
       const size = mod.file_size ? `${(mod.file_size / 1048576).toFixed(1)} МБ` : "Файл";
-      return `<article class="mod-card" style="animation-delay:${Math.min(index * 45, 360)}ms"><div class="cover"><span class="cover-glyph">${icon("mod")}</span></div><div class="card-top"><span class="tag">${escapeHtml(mod.tags?.[0] || "Мод")}</span><span class="version">${escapeHtml(mod.game_version || "")}</span></div><h2>${escapeHtml(mod.title)}</h2><p class="mod-description">${escapeHtml(mod.description || "")}</p><div class="card-bottom"><span class="author">${escapeHtml(mod.author || "Сообщество")} · ${size}</span>${mod.telegram_post_url ? `<a class="download-link" href="${escapeHtml(mod.telegram_post_url)}" target="_blank" rel="noreferrer" aria-label="Скачать ${escapeHtml(mod.title)}" title="Скачать">${icon("download")}</a>` : ""}</div></article>`;
+      const cover = mod.cover_url ? `<img class="cover-image" src="${escapeHtml(mod.cover_url)}" alt="" loading="lazy">` : `<span class="cover-glyph">${icon("mod")}</span>`;
+      const avatar = mod.author_avatar_url ? `<img class="mini-avatar" src="${escapeHtml(mod.author_avatar_url)}" alt="" loading="lazy">` : `<span class="mini-avatar avatar-fallback">${icon("user")}</span>`;
+      return `<article class="mod-card" data-mod-id="${escapeHtml(mod.mod_id)}" tabindex="0" role="link" aria-label="Открыть мод ${escapeHtml(mod.title)}" style="animation-delay:${Math.min(index * 45, 360)}ms"><div class="cover">${cover}</div><div class="card-top"><span class="tag">${escapeHtml(mod.tags?.[0] || "Мод")}</span><span class="version">${escapeHtml(mod.game_version || "")}</span></div><h2>${escapeHtml(mod.title)}</h2><p class="mod-description">${escapeHtml(mod.description || "")}</p><div class="card-bottom"><span class="card-author">${avatar}<span>${escapeHtml(mod.author || "Сообщество")} · ${size}</span></span>${mod.telegram_post_url ? `<a class="download-link" href="${escapeHtml(mod.telegram_post_url)}" target="_blank" rel="noreferrer" aria-label="Скачать ${escapeHtml(mod.title)}" title="Скачать">${icon("download")}</a>` : ""}</div></article>`;
     }).join("");
+    $$(".mini-avatar img").forEach(image => image.addEventListener("error", () => { image.replaceWith(Object.assign(document.createElement("span"), { className: "mini-avatar avatar-fallback", innerHTML: icon("user") })); }, { once: true }));
+    $$(".cover-image").forEach(image => image.addEventListener("error", () => { image.replaceWith(Object.assign(document.createElement("span"), { className: "cover-glyph", innerHTML: icon("mod") })); }, { once: true }));
   } catch (error) {
     grid.classList.remove("hidden");
     grid.innerHTML = `<div class="empty-state"><h2>Не удалось загрузить каталог</h2><p>${escapeHtml(error.message)}</p></div>`;
@@ -128,16 +134,78 @@ async function loadUser() {
 }
 function updateAccountUI() {
   const name = currentUser?.display_name || currentUser?.username || "Войти";
-  const initial = currentUser ? escapeHtml(name.slice(0, 1).toUpperCase()) : '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.6-3.4 3.2-5 7-5s6.4 1.6 7 5"/></svg>';
+  const fallback = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.6-3.4 3.2-5 7-5s6.4 1.6 7 5"/></svg>';
+  const initial = currentUser ? escapeHtml(name.slice(0, 1).toUpperCase()) : fallback;
   $("#user-short-name").textContent = currentUser ? name.split(" ")[0] : "Войти";
-  $("#avatar").innerHTML = initial;
-  $("#profile-avatar").innerHTML = initial;
+  $("#avatar").innerHTML = currentUser?.avatar_url ? `<img src="${escapeHtml(currentUser.avatar_url)}" alt="" class="avatar-image">` : initial;
+  $("#profile-avatar").innerHTML = currentUser?.avatar_url ? `<img src="${escapeHtml(currentUser.avatar_url)}" alt="" class="avatar-image">` : initial;
+  for (const el of [$("#avatar"), $("#profile-avatar")]) el.querySelector("img")?.addEventListener("error", () => { el.innerHTML = fallback; }, { once: true });
   $("#profile-name").textContent = currentUser ? name : "Гость";
   $("#profile-handle").textContent = currentUser?.username ? `@${currentUser.username}` : "";
   $("#profile-id").textContent = currentUser ? `Telegram ID · ${currentUser.telegram_id}` : "";
   $$(".moderator-only").forEach(item => item.classList.toggle("hidden", !currentUser?.is_moderator));
   if (!currentUser) $("#my-submissions").innerHTML = '<div class="list-empty"><button class="tonal-button" id="profile-login">Войти через Telegram</button></div>';
   else loadMySubmissions();
+}
+
+let activeMod = null;
+let activeScreenshot = 0;
+async function openMod(modId, push = true) {
+  if (push) history.pushState({ fromCatalog: true }, "", `#/mods/${encodeURIComponent(modId)}`);
+  setView("mod");
+  $("#detail-title").textContent = "Загрузка…";
+  $("#detail-thumbs").innerHTML = "";
+  $("#gallery-placeholder").hidden = false;
+  $("#detail-image").hidden = true;
+  try {
+    const { mod } = await api(`/api/mods/${encodeURIComponent(modId)}`);
+    activeMod = mod;
+    activeScreenshot = 0;
+    $("#detail-category").textContent = mod.tags?.[0] || "Мод";
+    $("#detail-tags").innerHTML = (mod.tags || []).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join("");
+    $("#detail-title").textContent = mod.title;
+    $("#detail-author-name").textContent = mod.author || "Сообщество";
+    $("#detail-description").textContent = mod.description || "";
+    $("#detail-version").textContent = mod.game_version || "—";
+    $("#detail-size").textContent = mod.file_size ? `${(mod.file_size / 1048576).toFixed(1)} МБ` : "—";
+    $("#detail-download").href = mod.telegram_post_url || "#";
+    const avatar = mod.author_avatar_url ? `<img src="${escapeHtml(mod.author_avatar_url)}" alt="" class="avatar-image">` : icon("user");
+    $("#detail-avatar").innerHTML = avatar;
+    const avatarImage = $("#detail-avatar img");
+    if (avatarImage) avatarImage.addEventListener("error", () => { $("#detail-avatar").innerHTML = icon("user"); }, { once: true });
+    const urls = mod.screenshot_urls || [];
+    $("#detail-thumbs").innerHTML = urls.map((url, index) => `<button class="gallery-thumb${index === 0 ? " active" : ""}" data-screenshot="${index}" aria-label="Скриншот ${index + 1}"><img src="${escapeHtml(url)}" alt="" loading="lazy"></button>`).join("");
+    $("#gallery-main").classList.toggle("has-image", urls.length > 0);
+    $("#gallery-placeholder").hidden = urls.length > 0;
+    $("#gallery-prev").classList.toggle("hidden", urls.length < 2);
+    $("#gallery-next").classList.toggle("hidden", urls.length < 2);
+    if (urls.length) showScreenshot(0);
+  } catch (error) {
+    $("#detail-title").textContent = error.message;
+  }
+}
+
+function showScreenshot(index) {
+  const urls = activeMod?.screenshot_urls || [];
+  if (!urls.length) return;
+  activeScreenshot = (index + urls.length) % urls.length;
+  const image = $("#detail-image");
+    image.src = urls[activeScreenshot];
+    image.alt = `${activeMod.title} — скриншот ${activeScreenshot + 1}`;
+    image.onerror = () => { image.hidden = true; $("#gallery-placeholder").hidden = false; };
+  image.hidden = false;
+  $("#gallery-placeholder").hidden = true;
+  $$(".gallery-thumb").forEach((thumb, i) => thumb.classList.toggle("active", i === activeScreenshot));
+}
+
+function syncHashRoute() {
+  const match = location.hash.match(/^#\/mods\/(.+)$/);
+  if (match) {
+    openMod(decodeURIComponent(match[1]), false);
+    return;
+  }
+  const view = location.hash.replace(/^#/, "");
+  setView(["profile", "upload", "moderation"].includes(view) ? view : "catalog");
 }
 
 const statusNames = { pending: "На проверке", approved: "Опубликован", rejected: "Отклонён" };
@@ -161,8 +229,34 @@ async function loadModeration() {
   } catch (error) { $("#moderation-list").innerHTML = `<div class="list-empty">${escapeHtml(error.message)}</div>`; }
 }
 
-for (const button of $$('[data-view]')) button.addEventListener("click", () => setView(button.dataset.view));
-for (const link of $$('[data-nav]')) link.addEventListener("click", event => { event.preventDefault(); setView(link.dataset.nav); });
+for (const button of $$('[data-view]')) button.addEventListener("click", () => {
+  const view = button.dataset.view;
+  if (location.hash.startsWith("#/mods/")) history.pushState({}, "", `#${view}`);
+  setView(view);
+});
+for (const link of $$('[data-nav]')) link.addEventListener("click", event => {
+  event.preventDefault();
+  if (location.hash.startsWith("#/mods/")) history.pushState({}, "", `#${link.dataset.nav}`);
+  setView(link.dataset.nav);
+});
+document.addEventListener("click", event => {
+  const card = event.target.closest("[data-mod-id]");
+  if (card && !event.target.closest("a,button")) openMod(card.dataset.modId);
+  const thumb = event.target.closest("[data-screenshot]");
+  if (thumb) showScreenshot(Number(thumb.dataset.screenshot));
+});
+document.addEventListener("keydown", event => {
+  const card = event.target.closest("[data-mod-id]");
+  if (card && !event.target.closest("a,button") && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); openMod(card.dataset.modId); }
+});
+$("#detail-back").addEventListener("click", () => {
+  if (history.state?.fromCatalog) history.back();
+  else { history.replaceState({}, "", "#catalog"); setView("catalog"); }
+});
+$("#gallery-prev").addEventListener("click", () => showScreenshot(activeScreenshot - 1));
+$("#gallery-next").addEventListener("click", () => showScreenshot(activeScreenshot + 1));
+window.addEventListener("popstate", syncHashRoute);
+window.addEventListener("hashchange", syncHashRoute);
 $("#profile-shortcut").addEventListener("click", () => token() ? setView("profile") : startLogin());
 $("#search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadCatalog, 220); });
 $("#category-filter").addEventListener("change", loadCatalog);
@@ -210,4 +304,7 @@ document.addEventListener("keydown", event => {
 });
 
 loadConfig();
-loadUser().finally(loadCatalog);
+loadUser().finally(async () => {
+  await loadCatalog();
+  syncHashRoute();
+});

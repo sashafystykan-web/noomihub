@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import express from "express";
 import jwt from "jsonwebtoken";
 import { MongoClient } from "mongodb";
+import sharp from "sharp";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -53,7 +54,43 @@ app.get("/api/mods", requireDb, async (req, res, next) => {
     if (req.query.q?.trim()) filter.$text = { $search: req.query.q.trim() };
     if (req.query.tag?.trim()) filter.tags = req.query.tag.trim();
     const mods = await db.collection("mods").find(filter).sort({ published_at: -1 }).limit(100).toArray();
-    res.json({ mods: mods.map(({ _id, ...mod }) => mod) });
+    res.json({ mods: mods.map(({ _id, ...mod }) => ({
+      ...mod,
+      cover_url: mod.screenshot_file_ids?.length ? `/media/mod/${encodeURIComponent(mod.mod_id)}/0` : null,
+      author_avatar_url: mod.author_telegram_id ? `/media/avatar/${mod.author_telegram_id}` : null,
+    })) });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/mods/:id", requireDb, async (req, res, next) => {
+  try {
+    const mod = await db.collection("mods").findOne({ mod_id: req.params.id, status: "published" }, { projection: { _id: 0 } });
+    if (!mod) return res.status(404).json({ error: "Мод не найден" });
+    res.json({ mod: {
+      ...mod,
+      cover_url: mod.screenshot_file_ids?.length ? `/media/mod/${encodeURIComponent(mod.mod_id)}/0` : null,
+      screenshot_urls: (mod.screenshot_file_ids || []).map((_, index) => `/media/mod/${encodeURIComponent(mod.mod_id)}/${index}`),
+      author_avatar_url: mod.author_telegram_id ? `/media/avatar/${mod.author_telegram_id}` : null,
+    } });
+  } catch (error) { next(error); }
+});
+
+app.get("/media/mod/:id/:index", requireDb, async (req, res, next) => {
+  try {
+    const index = Number(req.params.index);
+    if (!Number.isInteger(index) || index < 0 || index > 4) return res.sendStatus(404);
+    const mod = await db.collection("mods").findOne({ mod_id: req.params.id, status: "published" }, { projection: { screenshot_file_ids: 1 } });
+    const fileId = mod?.screenshot_file_ids?.[index];
+    if (!fileId) return res.sendStatus(404);
+    await sendTelegramImage(res, fileId);
+  } catch (error) { next(error); }
+});
+
+app.get("/media/avatar/:telegramId", requireDb, async (req, res, next) => {
+  try {
+    const user = await db.collection("users").findOne({ telegram_id: Number(req.params.telegramId) }, { projection: { avatar_file_id: 1 } });
+    if (!user?.avatar_file_id) return res.sendStatus(404);
+    await sendTelegramImage(res, user.avatar_file_id);
   } catch (error) { next(error); }
 });
 
@@ -84,6 +121,7 @@ app.get("/api/me", requireDb, requireAuth, (req, res) => {
       telegram_id: req.user.telegram_id,
       username: req.user.username,
       display_name: req.user.display_name,
+      avatar_url: req.user.avatar_file_id ? `/media/avatar/${req.user.telegram_id}` : null,
       created_at: req.user.created_at,
       is_moderator: req.user.is_moderator,
     },
@@ -112,6 +150,21 @@ function submissionCaption(data) {
   ].join("\n").slice(0, 1000);
 }
 
+function withTelegramStatus(caption, status) {
+  const clean = caption.replace(/\n#(?:на_модерации|проверен|отклонён)(?=\n|$)/gu, "").slice(0, 1000);
+  return `${clean}\n#${status}`;
+}
+
+async function submissionCooldownMs(telegramId) {
+  const latest = await db.collection("submissions").findOne({ telegram_id: telegramId }, { sort: { created_at: -1 }, projection: { created_at: 1 } });
+  return latest ? Math.max(0, 24 * 60 * 60 * 1000 - (Date.now() - new Date(latest.created_at).getTime())) : 0;
+}
+
+function cooldownNotice(ms) {
+  const hours = Math.ceil(ms / (60 * 60 * 1000));
+  return `Следующую заявку можно отправить через ${hours} ч.`;
+}
+
 app.get("/api/moderation/pending", requireDb, requireAuth, requireModerator, async (_req, res, next) => {
   try {
     const submissions = await db.collection("submissions").find(
@@ -127,25 +180,37 @@ app.post("/api/moderation/:id/approve", requireDb, requireAuth, requireModerator
     const submissions = db.collection("submissions");
     const submission = await submissions.findOne({ submission_id: req.params.id, status: "pending" });
     if (!submission) return res.status(404).json({ error: "Заявка не найдена" });
-    const copied = await telegramRequest("copyMessage", {
-      chat_id: channelId,
-      from_chat_id: reviewChannelId,
-      message_id: submission.review_message_id,
-      caption: submission.caption,
-    });
-    const postUrl = channelUsername ? `https://t.me/${channelUsername}/${copied.message_id}` : null;
+    const publishedCaption = withTelegramStatus(submission.caption, "проверен");
+    let publishedMessageId = submission.published_message_id;
+    if (!publishedMessageId) {
+      const copied = await telegramRequest("copyMessage", {
+        chat_id: channelId,
+        from_chat_id: reviewChannelId,
+        message_id: submission.review_message_id,
+        caption: publishedCaption,
+      });
+      publishedMessageId = copied.message_id;
+      await submissions.updateOne({ submission_id: submission.submission_id }, { $set: { published_message_id: publishedMessageId } });
+    }
+    try {
+      await telegramRequest("editMessageCaption", { chat_id: reviewChannelId, message_id: submission.review_message_id, caption: publishedCaption });
+    } catch (error) { console.warn(`Could not mark verified Telegram post: ${error.message}`); }
+    const postUrl = channelUsername ? `https://t.me/${channelUsername}/${publishedMessageId}` : null;
     const publishedAt = new Date();
     const mod = {
-      mod_id: `tg-${channelId}-${copied.message_id}`,
+      mod_id: `tg-${channelId}-${publishedMessageId}`,
       title: submission.title,
       description: submission.description,
       game_version: submission.game_version,
       tags: submission.tags,
+      screenshot_file_ids: submission.screenshot_file_ids || [],
       file_id: submission.file_id,
+      file_unique_id: submission.file_unique_id,
       file_name: submission.file_name,
       file_size: submission.file_size,
       telegram_post_url: postUrl,
       author: submission.author,
+      author_telegram_id: submission.telegram_id,
       status: "published",
       published_at: publishedAt,
     };
@@ -162,6 +227,15 @@ app.post("/api/moderation/:id/reject", requireDb, requireAuth, requireModerator,
       { $set: { status: "rejected", rejection_reason: String(req.body.reason || "").trim().slice(0, 300), reviewed_at: new Date(), reviewed_by: req.user.telegram_id } },
     );
     if (!result.modifiedCount) return res.status(404).json({ error: "Заявка не найдена" });
+    const submission = await db.collection("submissions").findOne({ submission_id: req.params.id });
+    try {
+      const reason = submission.rejection_reason ? `\nПричина: ${submission.rejection_reason}` : "";
+      await telegramRequest("editMessageCaption", {
+        chat_id: reviewChannelId,
+        message_id: submission.review_message_id,
+        caption: withTelegramStatus(`${submission.caption.replace(/\n#на_модерации(?=\n|$)/u, "")}${reason}`, "отклонён"),
+      });
+    } catch (error) { console.warn(`Could not mark rejected Telegram post: ${error.message}`); }
     res.json({ ok: true });
   } catch (error) { next(error); }
 });
@@ -173,6 +247,49 @@ async function sendBotMessage(chatId, text, extra = {}) {
   });
   const result = await response.json();
   if (!response.ok || !result.ok) throw new Error(`Telegram sendMessage failed (${result.error_code || response.status})`);
+}
+
+async function refreshTelegramAvatar(telegramId) {
+  try {
+    const result = await telegramRequest("getUserProfilePhotos", { user_id: telegramId, limit: 1 });
+    const avatar = result.photos?.[0]?.at(-1)?.file_id;
+    if (avatar) await db.collection("users").updateOne({ telegram_id: telegramId }, { $set: { avatar_file_id: avatar } });
+    else await db.collection("users").updateOne({ telegram_id: telegramId }, { $unset: { avatar_file_id: "" } });
+  } catch (error) {
+    console.warn(`Telegram avatar lookup failed for ${telegramId}: ${error.message}`);
+  }
+}
+
+async function downloadTelegramFile(fileId) {
+  const file = await telegramRequest("getFile", { file_id: fileId });
+  if (!file.file_path) throw new Error("Telegram file path missing");
+  const response = await fetch(`https://api.telegram.org/file/bot${botToken}/${file.file_path}`);
+  if (!response.ok) throw new Error(`Telegram image fetch failed (${response.status})`);
+  return { buffer: Buffer.from(await response.arrayBuffer()), contentType: response.headers.get("content-type") || "image/jpeg" };
+}
+
+async function sendTelegramImage(res, fileId) {
+  const { buffer, contentType } = await downloadTelegramFile(fileId);
+  res.set("Content-Type", contentType);
+  res.set("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
+  res.set("X-Content-Type-Options", "nosniff");
+  res.send(buffer);
+}
+
+async function compressScreenshot(fileId) {
+  const { buffer } = await downloadTelegramFile(fileId);
+  let width = 1280;
+  let quality = 72;
+  let compressed;
+  const targetBytes = 250 * 1024;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    compressed = await sharp(buffer).rotate().resize({ width, height: width, fit: "inside", withoutEnlargement: true }).jpeg({ quality, progressive: true }).toBuffer();
+    if (compressed.length <= targetBytes) break;
+    width = Math.max(360, width - 110);
+    quality = Math.max(28, quality - 5);
+  }
+  if (compressed.length > targetBytes) compressed = await sharp(buffer).rotate().resize({ width: 240, height: 240, fit: "inside", withoutEnlargement: true }).jpeg({ quality: 18, progressive: true }).toBuffer();
+  return compressed;
 }
 
 async function handleUpdate(update) {
@@ -193,17 +310,23 @@ async function handleUpdate(update) {
     const argument = startCommand?.[1];
     if (argument === "submit" || submitCommand) {
       if (!botToken || !reviewChannelId) return sendBotMessage(chatId, "Подача модов пока не настроена. Сообщи администратору сайта.");
+      const waitMs = await submissionCooldownMs(telegramUser.id);
+      if (waitMs) return sendBotMessage(chatId, cooldownNotice(waitMs));
       await db.collection("submission_drafts").updateOne({ telegram_id: telegramUser.id }, {
         $set: { telegram_id: telegramUser.id, stage: "title", updated_at: new Date() },
-        $unset: { title: "", description: "", game_version: "", tags: "" },
+        $unset: { title: "", description: "", game_version: "", tags: "", file_id: "", file_name: "", file_size: "", review_message_id: "", screenshot_file_ids: "", submission_id: "" },
       }, { upsert: true });
+      await refreshTelegramAvatar(telegramUser.id);
       return sendBotMessage(chatId, "Подача мода · шаг 1 из 5\nНапиши название. Для отмены отправь /cancel.");
     }
     if (argument) {
       const ticket = await db.collection("auth_tickets").updateOne(
         { ticket: argument, expires_at: { $gt: new Date() } }, { $set: { telegram_id: telegramUser.id } },
       );
-      if (ticket.matchedCount) return sendBotMessage(chatId, "Готово! Вернись на сайт — аккаунт NoomiHub подключён.");
+      if (ticket.matchedCount) {
+        await refreshTelegramAvatar(telegramUser.id);
+        return sendBotMessage(chatId, "Готово! Вернись на сайт — аккаунт NoomiHub подключён.");
+      }
       return sendBotMessage(chatId, "Ссылка входа истекла или уже использована. Создай новую на сайте.");
     }
     return sendBotMessage(chatId, "Привет! Чтобы подать мод, отправь /submit. Для входа на сайт нажми «Войти через Telegram» и вернись сюда по ссылке.");
@@ -216,38 +339,97 @@ async function handleUpdate(update) {
 
   const draft = await db.collection("submission_drafts").findOne({ telegram_id: telegramUser.id });
   if (!draft) return;
+  if (draft.stage === "screenshots") {
+    if (message.text?.match(/^\/done(?:@\w+)?(?:\s|$)/)) {
+      const waitMs = await submissionCooldownMs(telegramUser.id);
+      if (waitMs) return sendBotMessage(chatId, cooldownNotice(waitMs));
+      const claimed = await db.collection("submission_drafts").updateOne(
+        { telegram_id: telegramUser.id, stage: "screenshots" }, { $set: { stage: "publishing", updated_at: new Date() } },
+      );
+      if (!claimed.modifiedCount) return sendBotMessage(chatId, "Заявка уже отправляется.");
+      const submission = {
+        submission_id: draft.submission_id,
+        telegram_id: telegramUser.id,
+        author: telegramUser.username ? `@${telegramUser.username}` : displayName,
+        title: draft.title,
+        description: draft.description,
+        game_version: draft.game_version || "Не указана",
+        tags: draft.tags?.length ? draft.tags : ["Другое"],
+        screenshot_file_ids: draft.screenshot_file_ids || [],
+        file_id: draft.file_id,
+        file_unique_id: draft.file_unique_id,
+        file_name: draft.file_name,
+        file_size: draft.file_size,
+        review_message_id: draft.review_message_id,
+        caption: draft.caption,
+        status: "pending",
+        created_at: new Date(),
+      };
+      await db.collection("submissions").insertOne(submission);
+      await db.collection("submission_drafts").deleteOne({ telegram_id: telegramUser.id });
+      return sendBotMessage(chatId, "Заявка отправлена на модерацию.");
+    }
+    if (message.photo?.length) {
+      if ((draft.screenshot_file_ids || []).length >= 5) return sendBotMessage(chatId, "Уже добавлено 5 скриншотов. Отправь /done.");
+      const photo = message.photo.at(-1);
+      try {
+        const compressed = await compressScreenshot(photo.file_id);
+        const form = new FormData();
+        form.set("chat_id", reviewChannelId);
+        form.set("photo", new Blob([compressed], { type: "image/jpeg" }), "screenshot.jpg");
+        const response = await fetch(`https://api.telegram.org/bot${botToken}/sendPhoto`, { method: "POST", body: form });
+        const result = await response.json();
+        if (!response.ok || !result.ok) throw new Error(result.description || "Telegram rejected screenshot");
+        const storedPhoto = result.result.photo.at(-1);
+        await db.collection("submission_drafts").updateOne({ telegram_id: telegramUser.id }, {
+          $push: { screenshot_file_ids: storedPhoto.file_id },
+          $set: { updated_at: new Date() },
+        });
+      } catch (error) {
+        console.error(`Screenshot processing failed: ${error.message}`);
+        return sendBotMessage(chatId, "Не получилось обработать фото. Попробуй отправить скриншот ещё раз.");
+      }
+      return sendBotMessage(chatId, `Скриншот ${((draft.screenshot_file_ids || []).length) + 1}/5 добавлен. Пришли ещё или отправь /done.`);
+    }
+    return sendBotMessage(chatId, "Пришли скриншот как фото — Telegram сожмёт изображение. Когда закончишь, отправь /done.");
+  }
   if (draft.stage === "file") {
     const document = message.document;
     if (!document) return sendBotMessage(chatId, "Пришли файл мода как документ (скрепка → Файл). Для отмены /cancel.");
     if (!reviewChannelId) return sendBotMessage(chatId, "Канал проверки не настроен. Сообщи администратору сайта.");
+    if (document.file_unique_id) {
+      const [existingSubmission, existingMod] = await Promise.all([
+        db.collection("submissions").findOne({ file_unique_id: document.file_unique_id }, { projection: { status: 1 } }),
+        db.collection("mods").findOne({ file_unique_id: document.file_unique_id }, { projection: { mod_id: 1 } }),
+      ]);
+      if (existingSubmission || existingMod) {
+        await db.collection("submission_drafts").deleteOne({ telegram_id: telegramUser.id });
+        const duplicateNotice = existingMod ? "Этот файл уже опубликован. Повторную копию не добавил." : existingSubmission.status === "pending" ? "Этот файл уже на модерации. Повторную заявку не добавил." : "Этот файл уже отправляли раньше. Повторную заявку не добавил.";
+        return sendBotMessage(chatId, duplicateNotice);
+      }
+    }
     const author = telegramUser.username ? `@${telegramUser.username}` : displayName;
-    const submissionId = crypto.randomUUID();
-    const submission = {
-      submission_id: submissionId,
-      telegram_id: telegramUser.id,
-      author,
-      title: draft.title,
-      description: draft.description,
-      game_version: draft.game_version || "Не указана",
-      tags: draft.tags.length ? draft.tags : ["Другое"],
-      file_id: document.file_id,
-      file_name: document.file_name || "mod",
-      file_size: document.file_size || 0,
-      caption: submissionCaption({ title: draft.title, author, description: draft.description, game_version: draft.game_version, tags: draft.tags }),
-      status: "pending",
-      created_at: new Date(),
-    };
+    const caption = withTelegramStatus(submissionCaption({ title: draft.title, author, description: draft.description, game_version: draft.game_version, tags: draft.tags }), "на_модерации");
     try {
       const copied = await telegramRequest("copyMessage", {
         chat_id: reviewChannelId,
         from_chat_id: chatId,
         message_id: message.message_id,
-        caption: submission.caption,
+        caption,
       });
-      submission.review_message_id = copied.message_id;
-      await db.collection("submissions").insertOne(submission);
-      await db.collection("submission_drafts").deleteOne({ telegram_id: telegramUser.id });
-      return sendBotMessage(chatId, "Заявка отправлена на модерацию. Статус появится в профиле на сайте.");
+      await db.collection("submission_drafts").updateOne({ telegram_id: telegramUser.id }, { $set: {
+        stage: "screenshots",
+        submission_id: crypto.randomUUID(),
+        file_id: document.file_id,
+        file_unique_id: document.file_unique_id || null,
+        file_name: document.file_name || "mod",
+        file_size: document.file_size || 0,
+        review_message_id: copied.message_id,
+        screenshot_file_ids: [],
+        caption,
+        updated_at: new Date(),
+      } });
+      return sendBotMessage(chatId, "Файл получен. Теперь пришли до 5 скриншотов как фото. Когда закончишь — отправь /done. Можно сразу отправить /done без скриншотов.");
     } catch (error) {
       console.error(`Submission copy failed: ${error.message}`);
       return sendBotMessage(chatId, "Не получилось передать файл на проверку. Попробуй отправить его ещё раз чуть позже.");
@@ -273,7 +455,7 @@ async function handleUpdate(update) {
   if (draft.stage === "tags") {
     const tags = value === "-" ? [] : value.split(/[,;]/).map((tag) => tag.trim().slice(0, 32)).filter(Boolean).slice(0, 10);
     await db.collection("submission_drafts").updateOne({ telegram_id: telegramUser.id }, { $set: { tags, stage: "file", updated_at: new Date() } });
-    return sendBotMessage(chatId, "Шаг 5 из 5\nПришли файл мода как документ (скрепка → Файл). Файл уйдёт в канал проверки, не на сервер сайта.");
+    return sendBotMessage(chatId, "Шаг 5 из 5\nПришли файл мода как документ (скрепка → Файл).");
   }
 }
 
@@ -340,7 +522,10 @@ async function start() {
       db.collection("users").createIndex({ telegram_id: 1 }, { unique: true }),
       db.collection("auth_tickets").createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 }),
       db.collection("submission_drafts").createIndex({ updated_at: 1 }, { expireAfterSeconds: 86400 }),
+      db.collection("submissions").createIndex({ telegram_id: 1, created_at: -1 }),
+      db.collection("submissions").createIndex({ file_unique_id: 1 }),
       db.collection("mods").createIndex({ published_at: -1 }),
+      db.collection("mods").createIndex({ file_unique_id: 1 }),
       db.collection("mods").createIndex({ title: "text", description: "text", tags: "text" }),
     ]);
     console.log("MongoDB connected");
