@@ -1,35 +1,23 @@
 # NoomiHub
 
-Фанатский каталог модов NoomiClone. Backend — **Node.js + Express**; интерфейс адаптивный, в духе Material You. MongoDB хранит аккаунты, заявки и индекс модов; Telegram хранит файлы.
+Каталог модов NoomiClone с подачей ссылок на внешние источники и проверкой модераторами. Сервер: Node.js + Express, данные аккаунтов и каталога: MongoDB. Telegram бот используется только для входа и получения аватара профиля.
 
 ## Локальный запуск
 
-Нужен Node.js 20+ и доступная MongoDB (можно MongoDB Atlas).
+Нужны Node.js 20+ и MongoDB.
 
-```bash
-cd Projects/NoomiHub
+```sh
 npm install
 cp .env.example .env
+npm start
 ```
 
-Заполни `.env`, включая публичный HTTPS `SITE_URL`, затем запусти `npm run dev`. Telegram не может отправлять webhook на `localhost`; для локальной проверки нужен публичный HTTPS-адрес. На Render приложение использует публичный адрес сервиса автоматически.
+Заполни `MONGODB_URI`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, `TELEGRAM_WEBHOOK_SECRET` и `JWT_SECRET`. Секрет webhook сгенерируй командой `openssl rand -hex 32`. Для назначения модераторов укажи их Telegram ID в `MODERATOR_TELEGRAM_IDS`, через запятую.
 
-## Подача модов и модерация
+Пользователь входит через Telegram, затем отправляет форму на сайте: название, описание, URL источника, теги и до пяти скриншотов. Принимаются ссылки HTTP/HTTPS. Сервер не скачивает содержимое ссылки, чтобы проверить её; модератор открывает источник самостоятельно. Повторная подача доступна раз в 24 часа, одинаковые URL отклоняются.
 
-Пользователь отправляет `/submit` боту. Бот спрашивает название, описание, версию, теги и файл, затем принимает до пяти скриншотов и сжимает каждый примерно до 250 КБ. Для завершения отправки используется `/done`. Telegram передаёт файлы в **приватный канал проверки**, MongoDB хранит метаданные. У заявок и публикаций в подписи стоят `#на_модерации`, `#проверен` или `#отклонён`; повторная отправка того же файла блокируется. После каждой заявки действует пауза 24 часа. Модератор одобряет заявку на сайте, бот публикует её в открытом канале.
-
-Создай бота через @BotFather. Создай публичный канал модов и отдельный приватный канал проверки; добавь бота администратором в оба. Заполни `TELEGRAM_CHANNEL_ID` и `TELEGRAM_REVIEW_CHANNEL_ID` числовыми ID вида `-100...`, а также `TELEGRAM_CHANNEL_USERNAME` без `@`.
-
-Файл отправляется из клиента Telegram прямо боту и затем копируется между каналами; веб-сервер не принимает и не хранит его. Подать мод можно кнопкой «Загрузить мод» на сайте или командой `/submit` в боте. Размер зависит от возможностей Telegram для отправки файла пользователем и обработки сообщения ботом.
-
-Чтобы назначить модератора, войди на сайт, скопируй свой Telegram ID из профиля и добавь его в Render в `MODERATOR_TELEGRAM_IDS`. Несколько ID разделяй запятыми.
+Модератор публикует мод со статусом «Проверено» или «Небезопасно» либо отклоняет заявку. Скриншоты и полученные от Telegram аватары сжимаются в JPEG и хранятся на серверном диске; MongoDB хранит метаданные и имена файлов.
 
 ## Render
 
-1. Создай GitHub-репозиторий из этой папки, подключи его к Render как Web Service. `render.yaml` задаёт Node runtime, запуск и health check.
-2. Создай MongoDB Atlas cluster и скопируй connection string.
-3. В Render → Environment добавь `MONGODB_URI`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, `TELEGRAM_CHANNEL_ID`, `TELEGRAM_CHANNEL_USERNAME`, `TELEGRAM_REVIEW_CHANNEL_ID`, `TELEGRAM_WEBHOOK_SECRET` и `JWT_SECRET`. Для `TELEGRAM_WEBHOOK_SECRET` сгенерируй hex-строку командой `openssl rand -hex 32`; Telegram принимает в ней только буквы, цифры, `_` и `-`. Для `JWT_SECRET` используй отдельную случайную строку. `MODERATOR_TELEGRAM_IDS` задай после входа в профиль.
-4. Сохрани переменные и дождись нового деплоя. При старте приложение само зарегистрирует webhook на URL Render. Не запускай отдельно `setWebhook` и не настраивай long polling: используется только webhook.
-5. Открой `/api/health`. Должно быть `{"ok":true,"database":true,"telegram_configured":true,"telegram_webhook":true}`. Затем войди через сайт, назначь Telegram ID модератором и подай тестовый мод командой `/submit`.
-
-Не публикуй токен бота или URI MongoDB в репозитории.
+`render.yaml` объявляет постоянный диск на 1 GB в `/var/data` и задаёт `MEDIA_DIR=/var/data/noomihub-media`. Persistent Disk Render доступен платным Web Services; бесплатный Web Service не может к нему подключить диск. Сам диск тарифицируется отдельно от вычислительного плана. Бот настроит webhook при запуске, если в Render заданы `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, `TELEGRAM_WEBHOOK_SECRET` и `MONGODB_URI`.

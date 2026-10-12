@@ -1,25 +1,28 @@
 import "dotenv/config";
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
 import express from "express";
 import jwt from "jsonwebtoken";
+import multer from "multer";
 import { MongoClient } from "mongodb";
 import sharp from "sharp";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
+const mediaDir = path.resolve(process.env.MEDIA_DIR || path.join(root, "data"));
+const avatarDir = path.join(mediaDir, "avatars");
+const screenshotDir = path.join(mediaDir, "screenshots");
 const app = express();
 const port = Number(process.env.PORT || 8000);
 const botToken = process.env.TELEGRAM_BOT_TOKEN || "";
 const botUsername = process.env.TELEGRAM_BOT_USERNAME || "";
-const channelId = process.env.TELEGRAM_CHANNEL_ID || "";
-const reviewChannelId = process.env.TELEGRAM_REVIEW_CHANNEL_ID || "";
-const channelUsername = process.env.TELEGRAM_CHANNEL_USERNAME || "";
 const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET || "";
 const jwtSecret = process.env.JWT_SECRET || "local-development-secret-change-me";
 const moderatorIds = new Set((process.env.MODERATOR_TELEGRAM_IDS || "").split(",").map((id) => id.trim()).filter(Boolean));
 let db;
 let telegramWebhookReady = false;
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024, files: 5 } });
 
 app.use(express.json({ limit: "2mb" }));
 app.use("/static", express.static(path.join(root, "static")));
@@ -39,14 +42,42 @@ function requireModerator(req, res, next) {
   if (req.user?.is_moderator) return next();
   res.status(403).json({ error: "Доступ только для модераторов" });
 }
+function mediaUrl(name) { return name ? `/media/${encodeURIComponent(name)}` : null; }
+async function writeCompressedImage(buffer, directory, targetBytes, maxWidth) {
+  let width = maxWidth;
+  let quality = 76;
+  let output;
+  for (let attempt = 0; attempt < 9; attempt += 1) {
+    output = await sharp(buffer, { failOn: "error" }).rotate().resize({ width, height: width, fit: "inside", withoutEnlargement: true }).jpeg({ quality, progressive: true, mozjpeg: true }).toBuffer();
+    if (output.length <= targetBytes) break;
+    width = Math.max(240, Math.round(width * 0.82));
+    quality = Math.max(30, quality - 6);
+  }
+  const name = `${directory === avatarDir ? "avatar" : "shot"}-${crypto.randomUUID()}.jpg`;
+  await fs.writeFile(path.join(directory, name), output, { flag: "wx" });
+  return name;
+}
+async function deleteMedia(names, directory) { await Promise.all((names || []).map((name) => fs.rm(path.join(directory, name), { force: true }).catch(() => {}))); }
+function normalizeSource(raw) {
+  let url;
+  try { url = new URL(String(raw || "").trim()); } catch { return null; }
+  if (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.username || url.password) return null;
+  url.hash = "";
+  url.hostname = url.hostname.toLowerCase();
+  if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
+  return url.toString();
+}
+function publicMod(mod) {
+  const shots = mod.screenshot_files || [];
+  return { ...mod, cover_url: mediaUrl(shots[0]), screenshot_urls: shots.map(mediaUrl), author_avatar_url: mediaUrl(mod.author_avatar) };
+}
+function submissionCooldownMs(latest) {
+  return latest ? Math.max(0, 24 * 60 * 60 * 1000 - (Date.now() - new Date(latest.created_at).getTime())) : 0;
+}
+
 app.get("/", (_req, res) => res.sendFile(path.join(root, "static", "index.html")));
-app.get("/api/health", (_req, res) => res.json({
-  ok: true,
-  database: Boolean(db),
-  telegram_configured: Boolean(botToken && botUsername),
-  telegram_webhook: telegramWebhookReady,
-}));
-app.get("/api/config", (_req, res) => res.json({ channel_username: channelUsername, bot_ready: Boolean(botUsername && telegramWebhookReady), submission_bot_url: botUsername ? `https://t.me/${botUsername}?start=submit` : null }));
+app.get("/api/health", (_req, res) => res.json({ ok: true, database: Boolean(db), telegram_configured: Boolean(botToken && botUsername), telegram_webhook: telegramWebhookReady }));
+app.get("/api/config", (_req, res) => res.json({ bot_ready: Boolean(botUsername && telegramWebhookReady) }));
 
 app.get("/api/mods", requireDb, async (req, res, next) => {
   try {
@@ -54,55 +85,35 @@ app.get("/api/mods", requireDb, async (req, res, next) => {
     if (req.query.q?.trim()) filter.$text = { $search: req.query.q.trim() };
     if (req.query.tag?.trim()) filter.tags = req.query.tag.trim();
     const mods = await db.collection("mods").find(filter).sort({ published_at: -1 }).limit(100).toArray();
-    res.json({ mods: mods.map(({ _id, ...mod }) => ({
-      ...mod,
-      cover_url: mod.screenshot_file_ids?.length ? `/media/mod/${encodeURIComponent(mod.mod_id)}/0` : null,
-      author_avatar_url: mod.author_telegram_id ? `/media/avatar/${mod.author_telegram_id}` : null,
-    })) });
+    res.json({ mods: mods.map(({ _id, ...mod }) => publicMod(mod)) });
   } catch (error) { next(error); }
 });
-
 app.get("/api/mods/:id", requireDb, async (req, res, next) => {
   try {
     const mod = await db.collection("mods").findOne({ mod_id: req.params.id, status: "published" }, { projection: { _id: 0 } });
     if (!mod) return res.status(404).json({ error: "Мод не найден" });
-    res.json({ mod: {
-      ...mod,
-      cover_url: mod.screenshot_file_ids?.length ? `/media/mod/${encodeURIComponent(mod.mod_id)}/0` : null,
-      screenshot_urls: (mod.screenshot_file_ids || []).map((_, index) => `/media/mod/${encodeURIComponent(mod.mod_id)}/${index}`),
-      author_avatar_url: mod.author_telegram_id ? `/media/avatar/${mod.author_telegram_id}` : null,
-    } });
+    res.json({ mod: publicMod(mod) });
   } catch (error) { next(error); }
 });
-
-app.get("/media/mod/:id/:index", requireDb, async (req, res, next) => {
+app.get("/media/:name", async (req, res, next) => {
   try {
-    const index = Number(req.params.index);
-    if (!Number.isInteger(index) || index < 0 || index > 4) return res.sendStatus(404);
-    const mod = await db.collection("mods").findOne({ mod_id: req.params.id, status: "published" }, { projection: { screenshot_file_ids: 1 } });
-    const fileId = mod?.screenshot_file_ids?.[index];
-    if (!fileId) return res.sendStatus(404);
-    await sendTelegramImage(res, fileId);
-  } catch (error) { next(error); }
-});
-
-app.get("/media/avatar/:telegramId", requireDb, async (req, res, next) => {
-  try {
-    const user = await db.collection("users").findOne({ telegram_id: Number(req.params.telegramId) }, { projection: { avatar_file_id: 1 } });
-    if (!user?.avatar_file_id) return res.sendStatus(404);
-    await sendTelegramImage(res, user.avatar_file_id);
-  } catch (error) { next(error); }
+    const name = path.basename(req.params.name);
+    if (!/^[\w-]+\.jpg$/.test(name)) return res.sendStatus(404);
+    const directory = name.startsWith("avatar-") ? avatarDir : name.startsWith("shot-") ? screenshotDir : null;
+    if (!directory) return res.sendStatus(404);
+    const file = await fs.readFile(path.join(directory, name));
+    res.set({ "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=2592000, immutable", "X-Content-Type-Options": "nosniff" }).send(file);
+  } catch (error) { if (error.code === "ENOENT") res.sendStatus(404); else next(error); }
 });
 
 app.post("/api/auth/start", requireDb, async (_req, res, next) => {
   try {
-    if (!botUsername || !telegramWebhookReady) return res.status(503).json({ error: "Telegram-вход пока не подключён. Проверь переменные бота и webhook в Render." });
+    if (!botUsername || !telegramWebhookReady) return res.status(503).json({ error: "Telegram-вход пока не подключён." });
     const ticket = crypto.randomBytes(20).toString("base64url");
     await db.collection("auth_tickets").insertOne({ ticket, created_at: new Date(), expires_at: new Date(Date.now() + 600_000) });
     res.json({ ticket, bot_url: `https://t.me/${botUsername}?start=${ticket}` });
   } catch (error) { next(error); }
 });
-
 app.get("/api/auth/status/:ticket", requireDb, async (req, res, next) => {
   try {
     const record = await db.collection("auth_tickets").findOne({ ticket: req.params.ticket, expires_at: { $gt: new Date() } });
@@ -114,406 +125,157 @@ app.get("/api/auth/status/:ticket", requireDb, async (req, res, next) => {
     res.json({ linked: true, token, user: user.display_name || "Игрок" });
   } catch (error) { next(error); }
 });
+app.get("/api/me", requireDb, requireAuth, (req, res) => res.json({ user: {
+  telegram_id: req.user.telegram_id, username: req.user.username, display_name: req.user.display_name,
+  avatar_url: mediaUrl(req.user.avatar_file), created_at: req.user.created_at, is_moderator: req.user.is_moderator,
+} }));
 
-app.get("/api/me", requireDb, requireAuth, (req, res) => {
-  res.json({
-    user: {
-      telegram_id: req.user.telegram_id,
-      username: req.user.username,
-      display_name: req.user.display_name,
-      avatar_url: req.user.avatar_file_id ? `/media/avatar/${req.user.telegram_id}` : null,
-      created_at: req.user.created_at,
-      is_moderator: req.user.is_moderator,
-    },
-  });
+app.post("/api/submissions", requireDb, requireAuth, upload.array("screenshots", 5), async (req, res, next) => {
+  const saved = [];
+  try {
+    const title = String(req.body.title || "").trim();
+    const description = String(req.body.description || "").trim();
+    const gameVersion = String(req.body.game_version || "").trim().slice(0, 40);
+    const downloadUrl = normalizeSource(req.body.download_url);
+    const tags = String(req.body.tags || "").split(/[,;]/).map((tag) => tag.trim().slice(0, 32)).filter(Boolean).slice(0, 10);
+    if (title.length < 2 || title.length > 120) return res.status(400).json({ error: "Название должно содержать от 2 до 120 символов." });
+    if (!description || description.length > 2000) return res.status(400).json({ error: "Описание должно содержать от 1 до 2000 символов." });
+    if (!downloadUrl) return res.status(400).json({ error: "Укажи корректную ссылку http или https." });
+    if ((req.files || []).some((file) => !file.mimetype.startsWith("image/"))) return res.status(400).json({ error: "Можно загрузить только изображения." });
+    const latest = await db.collection("submissions").findOne({ telegram_id: req.user.telegram_id }, { sort: { created_at: -1 }, projection: { created_at: 1 } });
+    const waitMs = submissionCooldownMs(latest);
+    if (waitMs) return res.status(429).json({ error: `Повторная подача будет доступна через ${Math.ceil(waitMs / 3600000)} ч.` });
+    const duplicate = await Promise.all([
+      db.collection("submissions").findOne({ normalized_url: downloadUrl }, { projection: { status: 1 } }),
+      db.collection("mods").findOne({ normalized_url: downloadUrl }, { projection: { mod_id: 1 } }),
+    ]);
+    if (duplicate.some(Boolean)) return res.status(409).json({ error: "Эта ссылка уже есть в каталоге или очереди модерации." });
+    for (const file of req.files || []) saved.push(await writeCompressedImage(file.buffer, screenshotDir, 250 * 1024, 1440));
+    const submission = {
+      submission_id: crypto.randomUUID(), telegram_id: req.user.telegram_id,
+      author: req.user.username ? `@${req.user.username}` : req.user.display_name,
+      author_avatar: req.user.avatar_file || null, title, description, game_version: gameVersion,
+      tags, download_url: downloadUrl, normalized_url: downloadUrl, screenshot_files: saved,
+      status: "pending", safety_status: "pending", created_at: new Date(),
+    };
+    await db.collection("submissions").insertOne(submission);
+    res.status(201).json({ ok: true, submission: { submission_id: submission.submission_id, title, status: "pending" } });
+  } catch (error) { await deleteMedia(saved, screenshotDir); next(error); }
 });
-
 app.get("/api/submissions/mine", requireDb, requireAuth, async (req, res, next) => {
   try {
-    const submissions = await db.collection("submissions").find(
-      { telegram_id: req.user.telegram_id },
-      { projection: { _id: 0, submission_id: 1, title: 1, status: 1, created_at: 1, rejection_reason: 1 } },
-    ).sort({ created_at: -1 }).limit(50).toArray();
+    const submissions = await db.collection("submissions").find({ telegram_id: req.user.telegram_id }, { projection: { _id: 0, submission_id: 1, title: 1, status: 1, safety_status: 1, created_at: 1, rejection_reason: 1 } }).sort({ created_at: -1 }).limit(50).toArray();
     res.json({ submissions });
   } catch (error) { next(error); }
 });
-
-function submissionCaption(data) {
-  const tags = data.tags.join(", ").slice(0, 120);
-  const description = data.description.replace(/\s+/g, " ").slice(0, 650);
-  return [
-    `Название: ${data.title}`,
-    `Автор: ${data.author}`,
-    `Версия: ${data.game_version || "Не указана"}`,
-    `Теги: ${tags || "Другое"}`,
-    `Описание: ${description}`,
-  ].join("\n").slice(0, 1000);
-}
-
-function withTelegramStatus(caption, status) {
-  const clean = caption.replace(/\n#(?:на_модерации|проверен|отклонён)(?=\n|$)/gu, "").slice(0, 1000);
-  return `${clean}\n#${status}`;
-}
-
-async function submissionCooldownMs(telegramId) {
-  const latest = await db.collection("submissions").findOne({ telegram_id: telegramId }, { sort: { created_at: -1 }, projection: { created_at: 1 } });
-  return latest ? Math.max(0, 24 * 60 * 60 * 1000 - (Date.now() - new Date(latest.created_at).getTime())) : 0;
-}
-
-function cooldownNotice(ms) {
-  const hours = Math.ceil(ms / (60 * 60 * 1000));
-  return `Следующую заявку можно отправить через ${hours} ч.`;
-}
-
 app.get("/api/moderation/pending", requireDb, requireAuth, requireModerator, async (_req, res, next) => {
   try {
-    const submissions = await db.collection("submissions").find(
-      { status: "pending" }, { projection: { _id: 0, submission_id: 1, title: 1, description: 1, game_version: 1, tags: 1, author: 1, file_name: 1, file_size: 1, created_at: 1 } },
-    ).sort({ created_at: 1 }).limit(100).toArray();
-    res.json({ submissions });
+    const submissions = await db.collection("submissions").find({ status: "pending" }, { projection: { _id: 0, submission_id: 1, title: 1, description: 1, game_version: 1, tags: 1, author: 1, download_url: 1, screenshot_files: 1, created_at: 1 } }).sort({ created_at: 1 }).limit(100).toArray();
+    res.json({ submissions: submissions.map((s) => ({ ...s, screenshot_urls: (s.screenshot_files || []).map(mediaUrl) })) });
   } catch (error) { next(error); }
 });
-
-app.post("/api/moderation/:id/approve", requireDb, requireAuth, requireModerator, async (req, res, next) => {
+app.post("/api/moderation/:id/review", requireDb, requireAuth, requireModerator, async (req, res, next) => {
   try {
-    if (!channelId || !reviewChannelId) return res.status(503).json({ error: "Не настроены каналы публикации и модерации" });
+    const decision = String(req.body.decision || "");
     const submissions = db.collection("submissions");
     const submission = await submissions.findOne({ submission_id: req.params.id, status: "pending" });
     if (!submission) return res.status(404).json({ error: "Заявка не найдена" });
-    const publishedCaption = withTelegramStatus(submission.caption, "проверен");
-    let publishedMessageId = submission.published_message_id;
-    if (!publishedMessageId) {
-      const copied = await telegramRequest("copyMessage", {
-        chat_id: channelId,
-        from_chat_id: reviewChannelId,
-        message_id: submission.review_message_id,
-        caption: publishedCaption,
-      });
-      publishedMessageId = copied.message_id;
-      await submissions.updateOne({ submission_id: submission.submission_id }, { $set: { published_message_id: publishedMessageId } });
+    const reviewedAt = new Date();
+    if (decision === "reject") {
+      await submissions.updateOne({ submission_id: submission.submission_id, status: "pending" }, { $set: { status: "rejected", reviewed_at: reviewedAt, reviewed_by: req.user.telegram_id, rejection_reason: String(req.body.reason || "").trim().slice(0, 300) } });
+      return res.json({ ok: true });
     }
-    try {
-      await telegramRequest("editMessageCaption", { chat_id: reviewChannelId, message_id: submission.review_message_id, caption: publishedCaption });
-    } catch (error) { console.warn(`Could not mark verified Telegram post: ${error.message}`); }
-    const postUrl = channelUsername ? `https://t.me/${channelUsername}/${publishedMessageId}` : null;
-    const publishedAt = new Date();
+    if (!["verified", "unsafe"].includes(decision)) return res.status(400).json({ error: "Неизвестное решение модерации." });
+    const safetyStatus = decision;
     const mod = {
-      mod_id: `tg-${channelId}-${publishedMessageId}`,
-      title: submission.title,
-      description: submission.description,
-      game_version: submission.game_version,
-      tags: submission.tags,
-      screenshot_file_ids: submission.screenshot_file_ids || [],
-      file_id: submission.file_id,
-      file_unique_id: submission.file_unique_id,
-      file_name: submission.file_name,
-      file_size: submission.file_size,
-      telegram_post_url: postUrl,
-      author: submission.author,
-      author_telegram_id: submission.telegram_id,
-      status: "published",
-      published_at: publishedAt,
+      mod_id: submission.submission_id, title: submission.title, description: submission.description,
+      game_version: submission.game_version, tags: submission.tags, screenshot_files: submission.screenshot_files,
+      download_url: submission.download_url, normalized_url: submission.normalized_url,
+      author: submission.author, author_telegram_id: submission.telegram_id, author_avatar: submission.author_avatar,
+      status: "published", safety_status: safetyStatus, published_at: reviewedAt,
     };
-    await db.collection("mods").updateOne({ mod_id: mod.mod_id }, { $set: mod }, { upsert: true });
-    await submissions.updateOne({ submission_id: submission.submission_id }, { $set: { status: "approved", reviewed_at: publishedAt, reviewed_by: req.user.telegram_id, telegram_post_url: postUrl } });
-    res.json({ ok: true, telegram_post_url: postUrl });
-  } catch (error) { next(error); }
-});
-
-app.post("/api/moderation/:id/reject", requireDb, requireAuth, requireModerator, async (req, res, next) => {
-  try {
-    const result = await db.collection("submissions").updateOne(
-      { submission_id: req.params.id, status: "pending" },
-      { $set: { status: "rejected", rejection_reason: String(req.body.reason || "").trim().slice(0, 300), reviewed_at: new Date(), reviewed_by: req.user.telegram_id } },
-    );
-    if (!result.modifiedCount) return res.status(404).json({ error: "Заявка не найдена" });
-    const submission = await db.collection("submissions").findOne({ submission_id: req.params.id });
-    try {
-      const reason = submission.rejection_reason ? `\nПричина: ${submission.rejection_reason}` : "";
-      await telegramRequest("editMessageCaption", {
-        chat_id: reviewChannelId,
-        message_id: submission.review_message_id,
-        caption: withTelegramStatus(`${submission.caption.replace(/\n#на_модерации(?=\n|$)/u, "")}${reason}`, "отклонён"),
-      });
-    } catch (error) { console.warn(`Could not mark rejected Telegram post: ${error.message}`); }
+    await db.collection("mods").insertOne(mod);
+    await submissions.updateOne({ submission_id: submission.submission_id, status: "pending" }, { $set: { status: "approved", safety_status: safetyStatus, reviewed_at: reviewedAt, reviewed_by: req.user.telegram_id } });
     res.json({ ok: true });
-  } catch (error) { next(error); }
+  } catch (error) { if (error.code === 11000) return res.status(409).json({ error: "Эта ссылка уже опубликована." }); next(error); }
 });
-
-async function sendBotMessage(chatId, text, extra = {}) {
-  if (!botToken) throw new Error("TELEGRAM_BOT_TOKEN is missing");
-  const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text, ...extra }),
-  });
-  const result = await response.json();
-  if (!response.ok || !result.ok) throw new Error(`Telegram sendMessage failed (${result.error_code || response.status})`);
-}
-
-async function refreshTelegramAvatar(telegramId) {
-  try {
-    const result = await telegramRequest("getUserProfilePhotos", { user_id: telegramId, limit: 1 });
-    const avatar = result.photos?.[0]?.at(-1)?.file_id;
-    if (avatar) await db.collection("users").updateOne({ telegram_id: telegramId }, { $set: { avatar_file_id: avatar } });
-    else await db.collection("users").updateOne({ telegram_id: telegramId }, { $unset: { avatar_file_id: "" } });
-  } catch (error) {
-    console.warn(`Telegram avatar lookup failed for ${telegramId}: ${error.message}`);
-  }
-}
-
-async function downloadTelegramFile(fileId) {
-  const file = await telegramRequest("getFile", { file_id: fileId });
-  if (!file.file_path) throw new Error("Telegram file path missing");
-  const response = await fetch(`https://api.telegram.org/file/bot${botToken}/${file.file_path}`);
-  if (!response.ok) throw new Error(`Telegram image fetch failed (${response.status})`);
-  return { buffer: Buffer.from(await response.arrayBuffer()), contentType: response.headers.get("content-type") || "image/jpeg" };
-}
-
-async function sendTelegramImage(res, fileId) {
-  const { buffer, contentType } = await downloadTelegramFile(fileId);
-  res.set("Content-Type", contentType);
-  res.set("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
-  res.set("X-Content-Type-Options", "nosniff");
-  res.send(buffer);
-}
-
-async function compressScreenshot(fileId) {
-  const { buffer } = await downloadTelegramFile(fileId);
-  let width = 1280;
-  let quality = 72;
-  let compressed;
-  const targetBytes = 250 * 1024;
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    compressed = await sharp(buffer).rotate().resize({ width, height: width, fit: "inside", withoutEnlargement: true }).jpeg({ quality, progressive: true }).toBuffer();
-    if (compressed.length <= targetBytes) break;
-    width = Math.max(360, width - 110);
-    quality = Math.max(28, quality - 5);
-  }
-  if (compressed.length > targetBytes) compressed = await sharp(buffer).rotate().resize({ width: 240, height: 240, fit: "inside", withoutEnlargement: true }).jpeg({ quality: 18, progressive: true }).toBuffer();
-  return compressed;
-}
-
-async function handleUpdate(update) {
-  const message = update.message;
-  if (!message || message.chat.type !== "private" || !message.from) return;
-  const telegramUser = message.from;
-  const chatId = message.chat.id;
-  if (!db) return sendBotMessage(chatId, "База данных сайта пока недоступна. Попробуй позже.");
-  const displayName = [telegramUser.first_name, telegramUser.last_name].filter(Boolean).join(" ") || telegramUser.username || "Игрок";
-  await db.collection("users").updateOne({ telegram_id: telegramUser.id }, {
-    $set: { display_name: displayName, username: telegramUser.username || null, updated_at: new Date() },
-    $setOnInsert: { created_at: new Date() },
-  }, { upsert: true });
-
-  const startCommand = message.text?.match(/^\/start(?:@\w+)?(?:\s+([\w-]+))?/);
-  const submitCommand = message.text?.match(/^\/(?:submit|new)(?:@\w+)?(?:\s|$)/);
-  if (startCommand || submitCommand) {
-    const argument = startCommand?.[1];
-    if (argument === "submit" || submitCommand) {
-      if (!botToken || !reviewChannelId) return sendBotMessage(chatId, "Подача модов пока не настроена. Сообщи администратору сайта.");
-      const waitMs = await submissionCooldownMs(telegramUser.id);
-      if (waitMs) return sendBotMessage(chatId, cooldownNotice(waitMs));
-      await db.collection("submission_drafts").updateOne({ telegram_id: telegramUser.id }, {
-        $set: { telegram_id: telegramUser.id, stage: "title", updated_at: new Date() },
-        $unset: { title: "", description: "", game_version: "", tags: "", file_id: "", file_name: "", file_size: "", review_message_id: "", screenshot_file_ids: "", submission_id: "" },
-      }, { upsert: true });
-      await refreshTelegramAvatar(telegramUser.id);
-      return sendBotMessage(chatId, "Подача мода · шаг 1 из 5\nНапиши название. Для отмены отправь /cancel.");
-    }
-    if (argument) {
-      const ticket = await db.collection("auth_tickets").updateOne(
-        { ticket: argument, expires_at: { $gt: new Date() } }, { $set: { telegram_id: telegramUser.id } },
-      );
-      if (ticket.matchedCount) {
-        await refreshTelegramAvatar(telegramUser.id);
-        return sendBotMessage(chatId, "Готово! Вернись на сайт — аккаунт NoomiHub подключён.");
-      }
-      return sendBotMessage(chatId, "Ссылка входа истекла или уже использована. Создай новую на сайте.");
-    }
-    return sendBotMessage(chatId, "Привет! Чтобы подать мод, отправь /submit. Для входа на сайт нажми «Войти через Telegram» и вернись сюда по ссылке.");
-  }
-
-  if (message.text?.match(/^\/cancel(?:@\w+)?(?:\s|$)/)) {
-    await db.collection("submission_drafts").deleteOne({ telegram_id: telegramUser.id });
-    return sendBotMessage(chatId, "Подачу отменил.");
-  }
-
-  const draft = await db.collection("submission_drafts").findOne({ telegram_id: telegramUser.id });
-  if (!draft) return;
-  if (draft.stage === "screenshots") {
-    if (message.text?.match(/^\/done(?:@\w+)?(?:\s|$)/)) {
-      const waitMs = await submissionCooldownMs(telegramUser.id);
-      if (waitMs) return sendBotMessage(chatId, cooldownNotice(waitMs));
-      const claimed = await db.collection("submission_drafts").updateOne(
-        { telegram_id: telegramUser.id, stage: "screenshots" }, { $set: { stage: "publishing", updated_at: new Date() } },
-      );
-      if (!claimed.modifiedCount) return sendBotMessage(chatId, "Заявка уже отправляется.");
-      const submission = {
-        submission_id: draft.submission_id,
-        telegram_id: telegramUser.id,
-        author: telegramUser.username ? `@${telegramUser.username}` : displayName,
-        title: draft.title,
-        description: draft.description,
-        game_version: draft.game_version || "Не указана",
-        tags: draft.tags?.length ? draft.tags : ["Другое"],
-        screenshot_file_ids: draft.screenshot_file_ids || [],
-        file_id: draft.file_id,
-        file_unique_id: draft.file_unique_id,
-        file_name: draft.file_name,
-        file_size: draft.file_size,
-        review_message_id: draft.review_message_id,
-        caption: draft.caption,
-        status: "pending",
-        created_at: new Date(),
-      };
-      await db.collection("submissions").insertOne(submission);
-      await db.collection("submission_drafts").deleteOne({ telegram_id: telegramUser.id });
-      return sendBotMessage(chatId, "Заявка отправлена на модерацию.");
-    }
-    if (message.photo?.length) {
-      if ((draft.screenshot_file_ids || []).length >= 5) return sendBotMessage(chatId, "Уже добавлено 5 скриншотов. Отправь /done.");
-      const photo = message.photo.at(-1);
-      try {
-        const compressed = await compressScreenshot(photo.file_id);
-        const form = new FormData();
-        form.set("chat_id", reviewChannelId);
-        form.set("photo", new Blob([compressed], { type: "image/jpeg" }), "screenshot.jpg");
-        const response = await fetch(`https://api.telegram.org/bot${botToken}/sendPhoto`, { method: "POST", body: form });
-        const result = await response.json();
-        if (!response.ok || !result.ok) throw new Error(result.description || "Telegram rejected screenshot");
-        const storedPhoto = result.result.photo.at(-1);
-        await db.collection("submission_drafts").updateOne({ telegram_id: telegramUser.id }, {
-          $push: { screenshot_file_ids: storedPhoto.file_id },
-          $set: { updated_at: new Date() },
-        });
-      } catch (error) {
-        console.error(`Screenshot processing failed: ${error.message}`);
-        return sendBotMessage(chatId, "Не получилось обработать фото. Попробуй отправить скриншот ещё раз.");
-      }
-      return sendBotMessage(chatId, `Скриншот ${((draft.screenshot_file_ids || []).length) + 1}/5 добавлен. Пришли ещё или отправь /done.`);
-    }
-    return sendBotMessage(chatId, "Пришли скриншот как фото — Telegram сожмёт изображение. Когда закончишь, отправь /done.");
-  }
-  if (draft.stage === "file") {
-    const document = message.document;
-    if (!document) return sendBotMessage(chatId, "Пришли файл мода как документ (скрепка → Файл). Для отмены /cancel.");
-    if (!reviewChannelId) return sendBotMessage(chatId, "Канал проверки не настроен. Сообщи администратору сайта.");
-    if (document.file_unique_id) {
-      const [existingSubmission, existingMod] = await Promise.all([
-        db.collection("submissions").findOne({ file_unique_id: document.file_unique_id }, { projection: { status: 1 } }),
-        db.collection("mods").findOne({ file_unique_id: document.file_unique_id }, { projection: { mod_id: 1 } }),
-      ]);
-      if (existingSubmission || existingMod) {
-        await db.collection("submission_drafts").deleteOne({ telegram_id: telegramUser.id });
-        const duplicateNotice = existingMod ? "Этот файл уже опубликован. Повторную копию не добавил." : existingSubmission.status === "pending" ? "Этот файл уже на модерации. Повторную заявку не добавил." : "Этот файл уже отправляли раньше. Повторную заявку не добавил.";
-        return sendBotMessage(chatId, duplicateNotice);
-      }
-    }
-    const author = telegramUser.username ? `@${telegramUser.username}` : displayName;
-    const caption = withTelegramStatus(submissionCaption({ title: draft.title, author, description: draft.description, game_version: draft.game_version, tags: draft.tags }), "на_модерации");
-    try {
-      const copied = await telegramRequest("copyMessage", {
-        chat_id: reviewChannelId,
-        from_chat_id: chatId,
-        message_id: message.message_id,
-        caption,
-      });
-      await db.collection("submission_drafts").updateOne({ telegram_id: telegramUser.id }, { $set: {
-        stage: "screenshots",
-        submission_id: crypto.randomUUID(),
-        file_id: document.file_id,
-        file_unique_id: document.file_unique_id || null,
-        file_name: document.file_name || "mod",
-        file_size: document.file_size || 0,
-        review_message_id: copied.message_id,
-        screenshot_file_ids: [],
-        caption,
-        updated_at: new Date(),
-      } });
-      return sendBotMessage(chatId, "Файл получен. Теперь пришли до 5 скриншотов как фото. Когда закончишь — отправь /done. Можно сразу отправить /done без скриншотов.");
-    } catch (error) {
-      console.error(`Submission copy failed: ${error.message}`);
-      return sendBotMessage(chatId, "Не получилось передать файл на проверку. Попробуй отправить его ещё раз чуть позже.");
-    }
-  }
-
-  if (!message.text) return sendBotMessage(chatId, "Ответь текстом на вопрос бота. Для отмены /cancel.");
-  const value = message.text.trim();
-  if (draft.stage === "title") {
-    if (!value || value.length > 120) return sendBotMessage(chatId, "Название должно быть от 1 до 120 символов. Попробуй ещё раз.");
-    await db.collection("submission_drafts").updateOne({ telegram_id: telegramUser.id }, { $set: { title: value, stage: "description", updated_at: new Date() } });
-    return sendBotMessage(chatId, "Шаг 2 из 5\nКоротко опиши мод (до 2000 символов).");
-  }
-  if (draft.stage === "description") {
-    if (!value || value.length > 2000) return sendBotMessage(chatId, "Описание должно быть от 1 до 2000 символов. Попробуй ещё раз.");
-    await db.collection("submission_drafts").updateOne({ telegram_id: telegramUser.id }, { $set: { description: value, stage: "game_version", updated_at: new Date() } });
-    return sendBotMessage(chatId, "Шаг 3 из 5\nУкажи версию игры, например 2.2.0. Если не знаешь — отправь «-».");
-  }
-  if (draft.stage === "game_version") {
-    await db.collection("submission_drafts").updateOne({ telegram_id: telegramUser.id }, { $set: { game_version: value === "-" ? "" : value.slice(0, 40), stage: "tags", updated_at: new Date() } });
-    return sendBotMessage(chatId, "Шаг 4 из 5\nУкажи теги через запятую (например: скин, карта). Если тегов нет — отправь «-».");
-  }
-  if (draft.stage === "tags") {
-    const tags = value === "-" ? [] : value.split(/[,;]/).map((tag) => tag.trim().slice(0, 32)).filter(Boolean).slice(0, 10);
-    await db.collection("submission_drafts").updateOne({ telegram_id: telegramUser.id }, { $set: { tags, stage: "file", updated_at: new Date() } });
-    return sendBotMessage(chatId, "Шаг 5 из 5\nПришли файл мода как документ (скрепка → Файл).");
-  }
-}
 
 async function telegramRequest(method, body = {}) {
-  const response = await fetch(`https://api.telegram.org/bot${botToken}/${method}`, {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
-  });
+  const response = await fetch(`https://api.telegram.org/bot${botToken}/${method}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   const result = await response.json();
   if (!result.ok) throw new Error(`Telegram ${method} failed (${result.error_code}): ${result.description || "unknown error"}`);
   return result.result;
 }
-
+async function refreshTelegramAvatar(telegramId) {
+  try {
+    const result = await telegramRequest("getUserProfilePhotos", { user_id: telegramId, limit: 1 });
+    const photo = result.photos?.[0]?.at(-1);
+    if (!photo) return;
+    const file = await telegramRequest("getFile", { file_id: photo.file_id });
+    const response = await fetch(`https://api.telegram.org/file/bot${botToken}/${file.file_path}`);
+    if (!response.ok) throw new Error(`Telegram avatar fetch failed (${response.status})`);
+    const avatarFile = await writeCompressedImage(Buffer.from(await response.arrayBuffer()), avatarDir, 40 * 1024, 256);
+    const previous = await db.collection("users").findOneAndUpdate({ telegram_id: telegramId }, { $set: { avatar_file: avatarFile } }, { returnDocument: "before" });
+    if (previous?.avatar_file) {
+      await Promise.all([
+        db.collection("mods").updateMany({ author_telegram_id: telegramId }, { $set: { author_avatar: avatarFile } }),
+        db.collection("submissions").updateMany({ telegram_id: telegramId }, { $set: { author_avatar: avatarFile } }),
+      ]);
+      await fs.rm(path.join(avatarDir, previous.avatar_file), { force: true }).catch(() => {});
+    }
+  } catch (error) { console.warn(`Telegram avatar lookup failed for ${telegramId}: ${error.message}`); }
+}
+async function sendBotMessage(chatId, text) {
+  const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text }) });
+  if (!response.ok) throw new Error(`Telegram sendMessage failed (${response.status})`);
+}
+async function handleUpdate(update) {
+  const message = update.message;
+  if (!message || message.chat.type !== "private" || !message.from) return;
+  const user = message.from;
+  const chatId = message.chat.id;
+  const displayName = [user.first_name, user.last_name].filter(Boolean).join(" ") || user.username || "Игрок";
+  await db.collection("users").updateOne({ telegram_id: user.id }, { $set: { display_name: displayName, username: user.username || null, updated_at: new Date() }, $setOnInsert: { created_at: new Date() } }, { upsert: true });
+  const start = message.text?.match(/^\/start(?:@\w+)?(?:\s+([\w-]+))?/);
+  if (!start) return;
+  const ticketId = start[1];
+  if (ticketId) {
+    const ticket = await db.collection("auth_tickets").updateOne({ ticket: ticketId, expires_at: { $gt: new Date() } }, { $set: { telegram_id: user.id } });
+    if (!ticket.matchedCount) return sendBotMessage(chatId, "Ссылка входа истекла. Создай новую на сайте.");
+    await refreshTelegramAvatar(user.id);
+    return sendBotMessage(chatId, "Готово! Вернись на сайт — вход выполнен.");
+  }
+  await refreshTelegramAvatar(user.id);
+  return sendBotMessage(chatId, "Привет! Бот NoomiHub используется для входа на сайт. Подача и модерация модов проходят на сайте.");
+}
 async function configureTelegramWebhook() {
-  if (!botToken || !webhookSecret) {
-    console.error("Telegram webhook not configured: set TELEGRAM_BOT_TOKEN and TELEGRAM_WEBHOOK_SECRET in Render Environment");
-    return;
-  }
+  if (!botToken || !webhookSecret) { console.error("Telegram webhook not configured: set bot token and webhook secret"); return; }
   const baseUrl = process.env.RENDER_EXTERNAL_URL || process.env.SITE_URL;
-  if (!baseUrl) {
-    console.error("Telegram webhook not configured: Render did not provide RENDER_EXTERNAL_URL and SITE_URL is empty");
-    return;
-  }
+  if (!baseUrl) { console.error("Telegram webhook not configured: no public site URL"); return; }
   const webhookUrl = `${baseUrl.replace(/\/$/, "")}/telegram/webhook`;
   try {
-    await telegramRequest("setWebhook", {
-      url: webhookUrl,
-      secret_token: webhookSecret,
-      allowed_updates: ["message"],
-      drop_pending_updates: false,
-    });
+    await telegramRequest("setWebhook", { url: webhookUrl, secret_token: webhookSecret, allowed_updates: ["message"], drop_pending_updates: false });
     telegramWebhookReady = true;
     console.log(`Telegram webhook configured: ${webhookUrl}`);
-  } catch (error) {
-    telegramWebhookReady = false;
-    console.error(`Telegram webhook setup failed: ${error.message}`);
-  }
+  } catch (error) { console.error(`Telegram webhook setup failed: ${error.message}`); }
 }
-
 app.post("/telegram/webhook", async (req, res, next) => {
   const expected = Buffer.from(webhookSecret);
   const actual = Buffer.from(req.get("x-telegram-bot-api-secret-token") || "");
-  if (!webhookSecret || expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
-    return res.status(403).json({ error: "Invalid Telegram webhook secret" });
-  }
-  try {
-    await handleUpdate(req.body);
-    console.log(`Telegram update handled: ${req.body.update_id ?? "unknown"}`);
-    res.json({ ok: true });
-  }
-  catch (error) { next(error); }
+  if (!webhookSecret || expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) return res.status(403).json({ error: "Invalid Telegram webhook secret" });
+  try { if (db) await handleUpdate(req.body); res.json({ ok: true }); } catch (error) { next(error); }
 });
-
 app.use((error, _req, res, _next) => {
   console.error(`Request failed: ${error.message}`);
-  res.status(500).json({ error: "Internal server error" });
+  if (error.code === 11000) return res.status(409).json({ error: "Эта ссылка уже есть в каталоге или очереди модерации." });
+  if (error instanceof multer.MulterError) return res.status(400).json({ error: error.code === "LIMIT_FILE_SIZE" ? "Изображение больше 8 МБ." : "Не удалось принять изображения." });
+  if (/unsupported image|input buffer|corrupt header|premature end/i.test(error.message)) return res.status(400).json({ error: "Один из файлов не является корректным изображением." });
+  res.status(500).json({ error: "Внутренняя ошибка сервера." });
 });
 
 async function start() {
+  await fs.mkdir(avatarDir, { recursive: true });
+  await fs.mkdir(screenshotDir, { recursive: true });
   if (process.env.MONGODB_URI) {
     const mongo = new MongoClient(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
     await mongo.connect();
@@ -521,19 +283,14 @@ async function start() {
     await Promise.all([
       db.collection("users").createIndex({ telegram_id: 1 }, { unique: true }),
       db.collection("auth_tickets").createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 }),
-      db.collection("submission_drafts").createIndex({ updated_at: 1 }, { expireAfterSeconds: 86400 }),
       db.collection("submissions").createIndex({ telegram_id: 1, created_at: -1 }),
-      db.collection("submissions").createIndex({ file_unique_id: 1 }),
+      db.collection("submissions").createIndex({ normalized_url: 1 }, { unique: true, sparse: true }),
       db.collection("mods").createIndex({ published_at: -1 }),
-      db.collection("mods").createIndex({ file_unique_id: 1 }),
+      db.collection("mods").createIndex({ normalized_url: 1 }, { unique: true, sparse: true }),
       db.collection("mods").createIndex({ title: "text", description: "text", tags: "text" }),
     ]);
     console.log("MongoDB connected");
   } else console.warn("MONGODB_URI missing; database routes return 503");
-  app.listen(port, "0.0.0.0", async () => {
-    console.log(`NoomiHub listening on ${port}`);
-    await configureTelegramWebhook();
-  });
+  app.listen(port, "0.0.0.0", async () => { console.log(`NoomiHub listening on ${port}`); await configureTelegramWebhook(); });
 }
-
 start().catch((error) => { console.error(`Startup failed: ${error.name}`); process.exit(1); });

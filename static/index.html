@@ -7,7 +7,7 @@
 </head>
 <body>
   <header class="appbar">
-    <a class="brand" href="#catalog" data-nav="catalog"><span class="brand-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18V6l12 12V6"/></svg></span><span>Noomi<span class="brand-muted">Hub</span></span></a>
+    <a class="brand" href="#catalog" data-nav="catalog"><span>Noomi<span class="brand-muted">Hub</span></span></a>
     <nav class="desktop-nav" aria-label="Разделы">
       <button class="nav-item active" data-view="catalog"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg>Каталог</button>
       <button class="nav-item" data-view="upload"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Добавить</button>
@@ -29,12 +29,21 @@
       <div class="page-head detail-head"><button class="icon-button" id="detail-back" aria-label="Назад в каталог" title="Назад"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6M9 12h11"/></svg></button><span class="tag" id="detail-category"></span></div>
       <div class="detail-layout">
         <div class="detail-gallery"><div class="gallery-main" id="gallery-main"><img id="detail-image" alt="" hidden><div class="gallery-placeholder" id="gallery-placeholder"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="m21 15-5-5L5 20"/></svg></div><button class="gallery-arrow previous" id="gallery-prev" aria-label="Предыдущий скриншот"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button><button class="gallery-arrow next" id="gallery-next" aria-label="Следующий скриншот"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button></div><div class="gallery-thumbs" id="detail-thumbs"></div></div>
-        <div class="detail-content"><div class="detail-tags" id="detail-tags"></div><h1 id="detail-title"></h1><div class="detail-author"><span class="detail-avatar" id="detail-avatar"></span><span id="detail-author-name"></span></div><p class="detail-description" id="detail-description"></p><div class="detail-meta"><span>Версия игры</span><b id="detail-version"></b><span>Размер</span><b id="detail-size"></b></div><a class="filled-button detail-download" id="detail-download" target="_blank" rel="noreferrer">Скачать в Telegram <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></div>
+        <div class="detail-content"><div class="detail-tags" id="detail-tags"></div><div id="detail-safety"></div><h1 id="detail-title"></h1><div class="detail-author"><span class="detail-avatar" id="detail-avatar"></span><span id="detail-author-name"></span></div><p class="detail-description" id="detail-description"></p><div class="detail-meta"><span>Версия игры</span><b id="detail-version"></b></div><a class="filled-button detail-download" id="detail-download" target="_blank" rel="noopener noreferrer">Открыть источник <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></div>
       </div>
     </section>
 
     <section class="view" id="view-upload" data-view-panel="upload">
-      <div class="bot-submit-card"><h1>Новый мод</h1><a class="filled-button" id="submit-via-bot" href="https://t.me/" target="_blank" rel="noreferrer">Открыть бота <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a><span class="form-status" id="bot-submit-status"></span></div>
+      <div class="page-head"><h1>Новый мод</h1></div>
+      <form class="submission-form surface" id="submission-form">
+        <label>Название<input name="title" maxlength="120" required placeholder="Название мода"></label>
+        <label>Ссылка на загрузку<input name="download_url" type="url" required placeholder="https://…"></label>
+        <div class="form-row"><label>Версия игры<input name="game_version" maxlength="40" placeholder="Например, 2.2"></label><label>Теги<input name="tags" maxlength="320" placeholder="карта, скин"></label></div>
+        <label>Описание<textarea name="description" maxlength="2000" rows="5" required placeholder="Описание мода"></textarea></label>
+        <label>Скриншоты<input name="screenshots" type="file" accept="image/*" multiple></label>
+        <div id="submission-previews" class="submission-previews"></div>
+        <button class="filled-button" id="submission-submit" type="submit">Отправить на проверку</button><span class="form-status" id="submission-status"></span>
+      </form>
     </section>
 
     <section class="view" id="view-profile" data-view-panel="profile">

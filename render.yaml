@@ -5,6 +5,10 @@ services:
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /api/health
+    disk:
+      name: noomihub-media
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: MONGODB_URI
         sync: false
@@ -12,12 +16,8 @@ services:
         sync: false
       - key: TELEGRAM_BOT_USERNAME
         sync: false
-      - key: TELEGRAM_CHANNEL_ID
-        sync: false
-      - key: TELEGRAM_CHANNEL_USERNAME
-        sync: false
-      - key: TELEGRAM_REVIEW_CHANNEL_ID
-        sync: false
+      - key: MEDIA_DIR
+        value: /var/data/noomihub-media
       - key: MODERATOR_TELEGRAM_IDS
         sync: false
       - key: TELEGRAM_WEBHOOK_SECRET

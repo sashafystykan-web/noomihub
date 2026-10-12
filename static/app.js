@@ -6,7 +6,6 @@ let mods = [];
 let currentUser = null;
 let toastTimer;
 let searchTimer;
-let submissionBotUrl = null;
 
 function escapeHtml(value = "") {
   return String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
@@ -63,10 +62,10 @@ async function loadCatalog() {
     $("#catalog-empty").classList.toggle("hidden", mods.length > 0);
     grid.classList.toggle("hidden", mods.length === 0);
     grid.innerHTML = mods.map((mod, index) => {
-      const size = mod.file_size ? `${(mod.file_size / 1048576).toFixed(1)} МБ` : "Файл";
+      const safety = mod.safety_status === "unsafe" ? "Небезопасно" : "Проверено";
       const cover = mod.cover_url ? `<img class="cover-image" src="${escapeHtml(mod.cover_url)}" alt="" loading="lazy">` : `<span class="cover-glyph">${icon("mod")}</span>`;
       const avatar = mod.author_avatar_url ? `<img class="mini-avatar" src="${escapeHtml(mod.author_avatar_url)}" alt="" loading="lazy">` : `<span class="mini-avatar avatar-fallback">${icon("user")}</span>`;
-      return `<article class="mod-card" data-mod-id="${escapeHtml(mod.mod_id)}" tabindex="0" role="link" aria-label="Открыть мод ${escapeHtml(mod.title)}" style="animation-delay:${Math.min(index * 45, 360)}ms"><div class="cover">${cover}</div><div class="card-top"><span class="tag">${escapeHtml(mod.tags?.[0] || "Мод")}</span><span class="version">${escapeHtml(mod.game_version || "")}</span></div><h2>${escapeHtml(mod.title)}</h2><p class="mod-description">${escapeHtml(mod.description || "")}</p><div class="card-bottom"><span class="card-author">${avatar}<span>${escapeHtml(mod.author || "Сообщество")} · ${size}</span></span>${mod.telegram_post_url ? `<a class="download-link" href="${escapeHtml(mod.telegram_post_url)}" target="_blank" rel="noreferrer" aria-label="Скачать ${escapeHtml(mod.title)}" title="Скачать">${icon("download")}</a>` : ""}</div></article>`;
+      return `<article class="mod-card" data-mod-id="${escapeHtml(mod.mod_id)}" tabindex="0" role="link" aria-label="Открыть мод ${escapeHtml(mod.title)}" style="animation-delay:${Math.min(index * 45, 360)}ms"><div class="cover">${cover}</div><div class="card-top"><span class="tag">${escapeHtml(mod.tags?.[0] || "Мод")}</span><span class="version">${escapeHtml(mod.game_version || "")}</span></div><h2>${escapeHtml(mod.title)}</h2><p class="mod-description">${escapeHtml(mod.description || "")}</p><div class="card-bottom"><span class="card-author">${avatar}<span>${escapeHtml(mod.author || "Сообщество")}</span></span><span class="safety-pill ${safety === "Небезопасно" ? "unsafe" : "verified"}">${safety}</span></div></article>`;
     }).join("");
     $$(".mini-avatar img").forEach(image => image.addEventListener("error", () => { image.replaceWith(Object.assign(document.createElement("span"), { className: "mini-avatar avatar-fallback", innerHTML: icon("user") })); }, { once: true }));
     $$(".cover-image").forEach(image => image.addEventListener("error", () => { image.replaceWith(Object.assign(document.createElement("span"), { className: "cover-glyph", innerHTML: icon("mod") })); }, { once: true }));
@@ -163,12 +162,14 @@ async function openMod(modId, push = true) {
     activeScreenshot = 0;
     $("#detail-category").textContent = mod.tags?.[0] || "Мод";
     $("#detail-tags").innerHTML = (mod.tags || []).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join("");
+    const unsafe = mod.safety_status === "unsafe";
+    $("#detail-safety").innerHTML = `<span class="safety-pill ${unsafe ? "unsafe" : "verified"}">${unsafe ? "Небезопасно" : "Проверено"}</span>`;
     $("#detail-title").textContent = mod.title;
     $("#detail-author-name").textContent = mod.author || "Сообщество";
     $("#detail-description").textContent = mod.description || "";
     $("#detail-version").textContent = mod.game_version || "—";
-    $("#detail-size").textContent = mod.file_size ? `${(mod.file_size / 1048576).toFixed(1)} МБ` : "—";
-    $("#detail-download").href = mod.telegram_post_url || "#";
+    $("#detail-download").href = mod.download_url || "#";
+    $("#detail-download").classList.toggle("hidden", !mod.download_url);
     const avatar = mod.author_avatar_url ? `<img src="${escapeHtml(mod.author_avatar_url)}" alt="" class="avatar-image">` : icon("user");
     $("#detail-avatar").innerHTML = avatar;
     const avatarImage = $("#detail-avatar img");
@@ -209,12 +210,15 @@ function syncHashRoute() {
 }
 
 const statusNames = { pending: "На проверке", approved: "Опубликован", rejected: "Отклонён" };
-function statusPill(status) { return `<span class="status-pill status-${escapeHtml(status)}">${escapeHtml(statusNames[status] || status)}</span>`; }
+function statusPill(status, safety) {
+  const label = status === "approved" ? (safety === "unsafe" ? "Небезопасно" : "Проверено") : statusNames[status] || status;
+  return `<span class="status-pill status-${escapeHtml(status)}">${escapeHtml(label)}</span>`;
+}
 async function loadMySubmissions() {
   if (!currentUser) return;
   try {
     const { submissions = [] } = await api("/api/submissions/mine");
-    $("#my-submissions").innerHTML = submissions.length ? submissions.map(item => `<div class="submission-row"><div><h3>${escapeHtml(item.title)}</h3><small>${new Date(item.created_at).toLocaleDateString("ru-RU")}${item.rejection_reason ? ` · ${escapeHtml(item.rejection_reason)}` : ""}</small></div>${statusPill(item.status)}</div>`).join("") : '<div class="list-empty">Пока пусто</div>';
+    $("#my-submissions").innerHTML = submissions.length ? submissions.map(item => `<div class="submission-row"><div><h3>${escapeHtml(item.title)}</h3><small>${new Date(item.created_at).toLocaleDateString("ru-RU")}${item.rejection_reason ? ` · ${escapeHtml(item.rejection_reason)}` : ""}</small></div>${statusPill(item.status, item.safety_status)}</div>`).join("") : '<div class="list-empty">Пока пусто</div>';
   } catch (error) { $("#my-submissions").innerHTML = `<div class="list-empty">${escapeHtml(error.message)}</div>`; }
 }
 
@@ -225,7 +229,7 @@ async function loadModeration() {
     $("#queue-count").textContent = submissions.length;
     $("#pending-badge").classList.toggle("hidden", submissions.length === 0);
     $("#mobile-pending-badge").classList.toggle("hidden", submissions.length === 0);
-    $("#moderation-list").innerHTML = submissions.length ? submissions.map(item => `<article class="review-card" data-id="${escapeHtml(item.submission_id)}"><h2>${escapeHtml(item.title)}</h2><p>${escapeHtml(item.description)}</p><div class="review-meta"><span>${escapeHtml(item.author)}</span><span>${escapeHtml(item.game_version)}</span><span>${escapeHtml(item.file_name)} · ${item.file_size ? (item.file_size / 1048576).toFixed(1) + " МБ" : ""}</span><span>${new Date(item.created_at).toLocaleDateString("ru-RU")}</span></div><div class="review-actions"><button class="reject" data-action="reject">Отклонить</button><button class="approve" data-action="approve">Одобрить</button></div></article>`).join("") : '<div class="list-empty">Очередь пуста.</div>';
+    $("#moderation-list").innerHTML = submissions.length ? submissions.map(item => `<article class="review-card" data-id="${escapeHtml(item.submission_id)}"><h2>${escapeHtml(item.title)}</h2><p>${escapeHtml(item.description)}</p><div class="review-meta"><span>${escapeHtml(item.author)}</span><span>${escapeHtml(item.game_version || "")}</span><span>${new Date(item.created_at).toLocaleDateString("ru-RU")}</span></div><a class="review-source" href="${escapeHtml(item.download_url)}" target="_blank" rel="noopener noreferrer">Открыть источник ${icon("download")}</a><div class="review-shots">${(item.screenshot_urls || []).map(url => `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer"><img src="${escapeHtml(url)}" alt="Скриншот" loading="lazy"></a>`).join("")}</div><div class="review-actions"><button class="reject" data-action="reject">Отклонить</button><button class="approve" data-action="unsafe">Небезопасно</button><button class="approve" data-action="verified">Проверено</button></div></article>`).join("") : '<div class="list-empty">Очередь пуста.</div>';
   } catch (error) { $("#moderation-list").innerHTML = `<div class="list-empty">${escapeHtml(error.message)}</div>`; }
 }
 
@@ -273,37 +277,47 @@ document.addEventListener("click", event => {
   const reason = action === "reject" ? window.prompt("Причина отклонения (необязательно):") : "";
   if (action === "reject" && reason === null) return;
   actionButton.disabled = true;
-  api(`/api/moderation/${encodeURIComponent(card.dataset.id)}/${action}`, { method: "POST", body: JSON.stringify({ reason }) })
-    .then(() => { notify(action === "approve" ? "Мод опубликован." : "Заявка отклонена."); loadModeration(); })
+  api(`/api/moderation/${encodeURIComponent(card.dataset.id)}/review`, { method: "POST", body: JSON.stringify({ decision: action, reason }) })
+    .then(() => { notify(action === "reject" ? "Заявка отклонена." : "Мод опубликован."); loadModeration(); })
     .catch(error => { actionButton.disabled = false; notify(error.message); });
 });
 
-async function loadConfig() {
-  const link = $("#submit-via-bot");
-  const status = $("#bot-submit-status");
+$("#submission-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!currentUser) return startLogin();
+  const form = event.currentTarget;
+  const status = $("#submission-status");
+  const button = $("#submission-submit");
+  status.textContent = "";
+  button.disabled = true;
   try {
-    const config = await api("/api/config");
-    submissionBotUrl = config.submission_bot_url;
-    if (submissionBotUrl) link.href = submissionBotUrl;
-    if (!config.bot_ready) {
-      link.removeAttribute("href");
-      link.setAttribute("aria-disabled", "true");
-      link.classList.add("disabled");
-      status.textContent = "Бот пока не подключён.";
-    }
-  } catch {
-    link.removeAttribute("href");
-    link.setAttribute("aria-disabled", "true");
-    link.classList.add("disabled");
-    status.textContent = "Не удалось подключиться к боту.";
+    const data = new FormData(form);
+    const result = await api("/api/submissions", { method: "POST", body: data });
+    form.reset();
+    $("#submission-previews").innerHTML = "";
+    status.textContent = "Отправлено на проверку.";
+    status.className = "form-status success";
+    notify("Мод отправлен на проверку.");
+    loadMySubmissions();
+  } catch (error) {
+    status.textContent = error.message;
+    status.className = "form-status error";
+  } finally { button.disabled = false; }
+});
+$("#submission-form [name=screenshots]").addEventListener("change", (event) => {
+  const files = [...event.target.files].slice(0, 5);
+  if (event.target.files.length > 5) notify("Можно выбрать до 5 скриншотов.");
+  const input = event.target;
+  if (input.files.length > 5) {
+    const transfer = new DataTransfer(); files.forEach(file => transfer.items.add(file)); input.files = transfer.files;
   }
-}
+  $("#submission-previews").innerHTML = files.map(file => `<img src="${URL.createObjectURL(file)}" alt="">`).join("");
+});
 
 document.addEventListener("keydown", event => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setView("catalog"); $("#search").focus(); }
 });
 
-loadConfig();
 loadUser().finally(async () => {
   await loadCatalog();
   syncHashRoute();
