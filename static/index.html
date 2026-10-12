@@ -1,16 +1,60 @@
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#f6f2fa">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#f5f3fa">
   <title>NoomiHub — моды NoomiClone</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet"><link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header><a class="brand" href="/">N <span>Noomi<b>Hub</b></span></a><nav><a href="#mods">Каталог</a><a href="#about">О проекте</a></nav><button id="login">Войти через Telegram</button></header>
-  <main>
-    <section class="hero"><div class="hero-copy"><small>✳ ФАНАТСКОЕ СООБЩЕСТВО NOOMICLONE</small><h1>Найди свой<br><em>следующий мод.</em></h1><p>Моды и дополнения от игроков. Ищи, изучай и делись находками.</p><a class="cta" href="#mods">Смотреть каталог <span>↘</span></a></div><div class="hero-art"><i>✳</i><strong>N</strong><span>MODS ↗</span></div><div class="hero-foot">СОЗДАНО ИГРОКАМИ <span>ПОДДЕРЖИВАЕТСЯ СООБЩЕСТВОМ ✦</span><span>01 — 03</span></div></section>
-    <section class="catalog" id="mods"><div class="heading"><div><small>БИБЛИОТЕКА СООБЩЕСТВА</small><h2>Свежие находки<span>.</span></h2></div><label id="count">ЗАГРУЖАЕМ…</label></div><div class="toolbar"><input id="search" placeholder="⌕  Поиск модов…"><select id="category"><option value="">Все категории</option></select><button id="clear">Сбросить фильтры ↗</button></div><div id="grid" class="grid"><div class="empty">Загрузка каталога…</div></div><aside><b>Каталог только начинает расти</b><p>Опубликуй мод в канале NoomiHub — бот добавит его на сайт.</p><a id="channel" href="#" target="_blank" rel="noreferrer">К каналу ↗</a></aside></section>
-    <section id="about" class="about"><div><small>01 / О ПРОЕКТЕ</small><h2>Игроки делают<br>игру <em>своей.</em></h2></div><p>NoomiHub — фанатский каталог модов для NoomiClone. Здесь собраны дополнения сообщества с описаниями и ссылками на файлы. Проверяй совместимость перед установкой.</p></section>
-  </main><footer><a class="brand" href="/">N <span>Noomi<b>Hub</b></span></a><span>НЕОФИЦИАЛЬНЫЙ ФАНАТСКИЙ ПРОЕКТ</span><span>© NOOMIHUB</span></footer><div class="toast" id="toast"></div><script src="/static/app.js" defer></script>
-</body></html>
+  <header class="appbar">
+    <a class="brand" href="#catalog" data-nav="catalog"><span class="brand-icon">N</span><span>Noomi<b>Hub</b></span></a>
+    <nav class="desktop-nav" aria-label="Разделы">
+      <button class="nav-item active" data-view="catalog"><span>▦</span>Каталог</button>
+      <button class="nav-item" data-view="upload"><span>＋</span>Загрузить мод</button>
+      <button class="nav-item moderator-only hidden" data-view="moderation"><span>◈</span>Модерация <i id="pending-badge" class="hidden"></i></button>
+    </nav>
+    <button class="profile-shortcut" id="profile-shortcut"><span class="avatar" id="avatar">?</span><span id="user-short-name">Войти</span></button>
+  </header>
+
+  <main class="workspace">
+    <section class="view active" id="view-catalog" data-view-panel="catalog">
+      <div class="page-head"><div><span class="overline">NOOMICLONE COMMUNITY</span><h1>Каталог</h1><p class="page-subtitle">Моды игроков</p></div><button class="tonal-button" data-nav="upload"><span>＋</span> Добавить мод</button></div>
+      <div class="catalog-tools"><label class="search-field"><span>⌕</span><input id="search" type="search" placeholder="Поиск по каталогу" autocomplete="off"><kbd>⌘ K</kbd></label><select id="category-filter" aria-label="Категория"><option value="">Все категории</option></select><select id="sort-filter" aria-label="Сортировка"><option value="new">Сначала новые</option><option value="name">По названию</option></select></div>
+      <div class="result-line"><span id="result-count">Загрузка…</span><button class="text-button" id="clear-filters">Сбросить</button></div>
+      <div class="mod-grid" id="mod-grid"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
+      <div class="empty-state hidden" id="catalog-empty"><span class="empty-icon">✳</span><h2>Пока пусто</h2><button class="tonal-button" data-nav="upload">Загрузить первый мод</button></div>
+    </section>
+
+    <section class="view" id="view-upload" data-view-panel="upload">
+      <div class="page-head"><div><span class="overline">ПУБЛИКАЦИЯ</span><h1>Новый мод</h1><p class="page-subtitle">Отправь мод на проверку</p></div></div>
+      <div class="form-layout"><form id="upload-form" class="surface upload-form">
+        <div class="form-row"><label>Название<input name="title" required maxlength="120" placeholder="Например, Neon Gym"></label><label>Версия игры<input name="game_version" maxlength="40" placeholder="2.2.0"></label></div>
+        <label>Теги<input name="tags" maxlength="200" placeholder="скин, карта, физика"></label>
+        <label>Описание<textarea name="description" required maxlength="2000" rows="5" placeholder="Что меняет этот мод?"></textarea></label>
+        <label class="file-drop" id="file-drop"><input type="file" name="file" id="file-input" required><span class="upload-glyph">↑</span><b id="file-label">Выбери файл мода</b><small id="file-size">ZIP, APK или другой файл · до 50 МБ</small></label>
+        <div class="form-footer"><span class="form-status" id="upload-status"></span><button class="filled-button" type="submit">Отправить на проверку <span>→</span></button></div>
+      </form><aside class="form-aside"><div class="aside-mark">✳</div><h2>Публикация</h2><p>После проверки мод появится в каталоге.</p></aside></div>
+    </section>
+
+    <section class="view" id="view-profile" data-view-panel="profile">
+      <div class="page-head"><div><span class="overline">АККАУНТ</span><h1>Профиль</h1></div><button class="text-button danger" id="logout">Выйти</button></div>
+      <div class="profile-layout"><div class="surface user-card"><div class="avatar large" id="profile-avatar">?</div><div><h2 id="profile-name">Гость</h2><p id="profile-handle">Войди через Telegram</p><code id="profile-id"></code></div></div><div class="surface submission-card"><div class="card-heading"><div><span class="overline">МОИ ПУБЛИКАЦИИ</span><h2>Мои моды</h2></div><button class="tonal-button compact" data-nav="upload">＋ Новый</button></div><div id="my-submissions" class="list-stack"><div class="list-empty">Войди, чтобы увидеть публикации.</div></div></div></div>
+    </section>
+
+    <section class="view" id="view-moderation" data-view-panel="moderation">
+      <div class="page-head"><div><span class="overline">КОМАНДА NOOMIHUB</span><h1>Модерация</h1><p class="page-subtitle">Заявки на публикацию</p></div><span class="queue-count" id="queue-count">0</span></div>
+      <div id="moderation-list" class="moderation-list"><div class="list-empty">Загрузка очереди…</div></div>
+    </section>
+  </main>
+
+  <nav class="bottom-nav" aria-label="Основная навигация">
+    <button class="bottom-item active" data-view="catalog"><span>▦</span><small>Каталог</small></button>
+    <button class="bottom-item" data-view="upload"><span>＋</span><small>Загрузить</small></button>
+    <button class="bottom-item" data-view="profile"><span>◉</span><small>Профиль</small></button>
+    <button class="bottom-item moderator-only hidden" data-view="moderation"><span>◈</span><small>Модерация</small><i id="mobile-pending-badge" class="hidden"></i></button>
+  </nav>
+  <div class="toast" id="toast" role="status"></div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
