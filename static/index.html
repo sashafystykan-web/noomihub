@@ -1,56 +1,51 @@
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#f5f3fa">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#101012">
   <title>NoomiHub — моды NoomiClone</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet"><link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header class="appbar">
-    <a class="brand" href="#catalog" data-nav="catalog"><span class="brand-icon">N</span><span>Noomi<b>Hub</b></span></a>
+    <a class="brand" href="#catalog" data-nav="catalog"><span class="brand-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18V6l12 12V6"/></svg></span><span>Noomi<span class="brand-muted">Hub</span></span></a>
     <nav class="desktop-nav" aria-label="Разделы">
-      <button class="nav-item active" data-view="catalog"><span>▦</span>Каталог</button>
-      <button class="nav-item" data-view="upload"><span>＋</span>Загрузить мод</button>
-      <button class="nav-item moderator-only hidden" data-view="moderation"><span>◈</span>Модерация <i id="pending-badge" class="hidden"></i></button>
+      <button class="nav-item active" data-view="catalog"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg>Каталог</button>
+      <button class="nav-item" data-view="upload"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Добавить</button>
+      <button class="nav-item moderator-only hidden" data-view="moderation"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/><circle cx="12" cy="12" r="9"/></svg>Модерация <i id="pending-badge" class="hidden"></i></button>
     </nav>
-    <button class="profile-shortcut" id="profile-shortcut"><span class="avatar" id="avatar">?</span><span id="user-short-name">Войти</span></button>
+    <button class="profile-shortcut" id="profile-shortcut" aria-label="Профиль"><span class="avatar" id="avatar"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.6-3.4 3.2-5 7-5s6.4 1.6 7 5"/></svg></span><span id="user-short-name">Войти</span></button>
   </header>
 
   <main class="workspace">
     <section class="view active" id="view-catalog" data-view-panel="catalog">
-      <div class="page-head"><div><span class="overline">NOOMICLONE COMMUNITY</span><h1>Каталог</h1><p class="page-subtitle">Моды игроков</p></div><button class="tonal-button" data-nav="upload"><span>＋</span> Добавить мод</button></div>
-      <div class="catalog-tools"><label class="search-field"><span>⌕</span><input id="search" type="search" placeholder="Поиск по каталогу" autocomplete="off"><kbd>⌘ K</kbd></label><select id="category-filter" aria-label="Категория"><option value="">Все категории</option></select><select id="sort-filter" aria-label="Сортировка"><option value="new">Сначала новые</option><option value="name">По названию</option></select></div>
-      <div class="result-line"><span id="result-count">Загрузка…</span><button class="text-button" id="clear-filters">Сбросить</button></div>
+      <div class="page-head"><h1>Каталог</h1><button class="icon-button add-button" data-nav="upload" aria-label="Добавить мод" title="Добавить мод"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div>
+      <div class="catalog-tools"><label class="search-field"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg><input id="search" type="search" placeholder="Поиск" autocomplete="off"></label><select id="category-filter" aria-label="Категория"><option value="">Все категории</option></select><select id="sort-filter" aria-label="Сортировка"><option value="new">Новые</option><option value="name">По названию</option></select><button class="icon-button clear-button" id="clear-filters" aria-label="Сбросить фильтры" title="Сбросить"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button></div>
+      <div class="result-line"><span id="result-count">Загрузка…</span></div>
       <div class="mod-grid" id="mod-grid"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
-      <div class="empty-state hidden" id="catalog-empty"><span class="empty-icon">✳</span><h2>Пока пусто</h2><button class="tonal-button" data-nav="upload">Загрузить первый мод</button></div>
+      <div class="empty-state hidden" id="catalog-empty"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg><h2>Пока пусто</h2><button class="tonal-button" data-nav="upload">Добавить мод</button></div>
     </section>
 
     <section class="view" id="view-upload" data-view-panel="upload">
-      <div class="form-layout"><div class="surface upload-form bot-submit-card">
-        <span class="upload-glyph">✳</span><h2>Подай мод через бота</h2>
-        <p>Бот спросит название, описание и версию игры, а затем попросит прислать файл. Файл отправится прямо в Telegram.</p>
-        <a class="filled-button" id="submit-via-bot" href="https://t.me/" target="_blank" rel="noreferrer">Открыть бота <span>→</span></a>
-        <p class="form-status" id="bot-submit-status"></p>
-      </div><aside class="form-aside"><div class="aside-mark">✳</div><h2>Публикация</h2><p>После проверки мод появится в каталоге.</p></aside></div>
+      <div class="bot-submit-card"><h1>Новый мод</h1><a class="filled-button" id="submit-via-bot" href="https://t.me/" target="_blank" rel="noreferrer">Открыть бота <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a><span class="form-status" id="bot-submit-status"></span></div>
     </section>
 
     <section class="view" id="view-profile" data-view-panel="profile">
-      <div class="page-head"><div><span class="overline">АККАУНТ</span><h1>Профиль</h1></div><button class="text-button danger" id="logout">Выйти</button></div>
-      <div class="profile-layout"><div class="surface user-card"><div class="avatar large" id="profile-avatar">?</div><div><h2 id="profile-name">Гость</h2><p id="profile-handle">Войди через Telegram</p><code id="profile-id"></code></div></div><div class="surface submission-card"><div class="card-heading"><div><span class="overline">МОИ ПУБЛИКАЦИИ</span><h2>Мои моды</h2></div><button class="tonal-button compact" data-nav="upload">＋ Новый</button></div><div id="my-submissions" class="list-stack"><div class="list-empty">Войди, чтобы увидеть публикации.</div></div></div></div>
+      <div class="page-head"><h1>Профиль</h1><button class="icon-button" id="logout" aria-label="Выйти" title="Выйти"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M12 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-6"/></svg></button></div>
+      <div class="profile-layout"><div class="surface user-card"><div class="avatar large" id="profile-avatar"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.6-3.4 3.2-5 7-5s6.4 1.6 7 5"/></svg></div><div><h2 id="profile-name">Гость</h2><p id="profile-handle"></p><code id="profile-id"></code></div></div><div class="surface submission-card"><div class="card-heading"><h2>Мои моды</h2><button class="icon-button" data-nav="upload" aria-label="Новый мод" title="Новый мод"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></div><div id="my-submissions" class="list-stack"></div></div></div>
     </section>
 
     <section class="view" id="view-moderation" data-view-panel="moderation">
-      <div class="page-head"><div><span class="overline">КОМАНДА NOOMIHUB</span><h1>Модерация</h1><p class="page-subtitle">Заявки на публикацию</p></div><span class="queue-count" id="queue-count">0</span></div>
+      <div class="page-head"><h1>Модерация</h1><span class="queue-count" id="queue-count">0</span></div>
       <div id="moderation-list" class="moderation-list"><div class="list-empty">Загрузка очереди…</div></div>
     </section>
   </main>
 
   <nav class="bottom-nav" aria-label="Основная навигация">
-    <button class="bottom-item active" data-view="catalog"><span>▦</span><small>Каталог</small></button>
-    <button class="bottom-item" data-view="upload"><span>＋</span><small>Загрузить</small></button>
-    <button class="bottom-item" data-view="profile"><span>◉</span><small>Профиль</small></button>
-    <button class="bottom-item moderator-only hidden" data-view="moderation"><span>◈</span><small>Модерация</small><i id="mobile-pending-badge" class="hidden"></i></button>
+    <button class="bottom-item active" data-view="catalog" aria-label="Каталог"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg><small>Каталог</small></button>
+    <button class="bottom-item" data-view="upload" aria-label="Добавить"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><small>Добавить</small></button>
+    <button class="bottom-item" data-view="profile" aria-label="Профиль"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.6-3.4 3.2-5 7-5s6.4 1.6 7 5"/></svg><small>Профиль</small></button>
+    <button class="bottom-item moderator-only hidden" data-view="moderation" aria-label="Модерация"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/><circle cx="12" cy="12" r="9"/></svg><small>Модерация</small><i id="mobile-pending-badge" class="hidden"></i></button>
   </nav>
   <div class="toast" id="toast" role="status"></div>
   <script src="/static/app.js" defer></script>

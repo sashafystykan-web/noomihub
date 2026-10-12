@@ -11,6 +11,13 @@ let submissionBotUrl = null;
 function escapeHtml(value = "") {
   return String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
 }
+const icon = (name) => {
+  const paths = {
+    mod: '<path d="M5 7.5 12 4l7 3.5v9L12 20l-7-3.5z"/><path d="m5.5 7.8 6.5 3.3 6.5-3.3M12 11v8.5"/>',
+    download: '<path d="M12 4v11m-4-4 4 4 4-4M5 19h14"/>',
+  };
+  return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.mod}</svg>`;
+};
 function token() { return localStorage.getItem("noomihub_token"); }
 function notify(message) {
   toast.textContent = message;
@@ -33,7 +40,7 @@ function setView(view) {
   $$("[data-view-panel]").forEach(panel => panel.classList.toggle("active", panel.dataset.viewPanel === view));
   $$("[data-view]").forEach(button => button.classList.toggle("active", button.dataset.view === view));
   window.scrollTo({ top: 0, behavior: "smooth" });
-  if (view === "profile") loadProfile();
+  if (view === "profile" && currentUser) loadMySubmissions();
   if (view === "moderation") loadModeration();
 }
 
@@ -54,9 +61,8 @@ async function loadCatalog() {
     $("#catalog-empty").classList.toggle("hidden", mods.length > 0);
     grid.classList.toggle("hidden", mods.length === 0);
     grid.innerHTML = mods.map((mod, index) => {
-      const glyph = escapeHtml((mod.title || "N").slice(0, 1).toUpperCase());
       const size = mod.file_size ? `${(mod.file_size / 1048576).toFixed(1)} МБ` : "Файл";
-      return `<article class="mod-card" style="animation-delay:${Math.min(index * 45, 360)}ms"><div class="cover"><span class="cover-glyph">${glyph}</span></div><div class="card-top"><span class="tag">${escapeHtml(mod.tags?.[0] || "Мод")}</span><span class="version">${escapeHtml(mod.game_version || "")}</span></div><h2>${escapeHtml(mod.title)}</h2><p class="mod-description">${escapeHtml(mod.description || "")}</p><div class="card-bottom"><span class="author">${escapeHtml(mod.author || "Сообщество")} · ${size}</span>${mod.telegram_post_url ? `<a class="download-link" href="${escapeHtml(mod.telegram_post_url)}" target="_blank" rel="noreferrer">Скачать <span>↗</span></a>` : ""}</div></article>`;
+      return `<article class="mod-card" style="animation-delay:${Math.min(index * 45, 360)}ms"><div class="cover"><span class="cover-glyph">${icon("mod")}</span></div><div class="card-top"><span class="tag">${escapeHtml(mod.tags?.[0] || "Мод")}</span><span class="version">${escapeHtml(mod.game_version || "")}</span></div><h2>${escapeHtml(mod.title)}</h2><p class="mod-description">${escapeHtml(mod.description || "")}</p><div class="card-bottom"><span class="author">${escapeHtml(mod.author || "Сообщество")} · ${size}</span>${mod.telegram_post_url ? `<a class="download-link" href="${escapeHtml(mod.telegram_post_url)}" target="_blank" rel="noreferrer" aria-label="Скачать ${escapeHtml(mod.title)}" title="Скачать">${icon("download")}</a>` : ""}</div></article>`;
     }).join("");
   } catch (error) {
     grid.classList.remove("hidden");
@@ -122,12 +128,12 @@ async function loadUser() {
 }
 function updateAccountUI() {
   const name = currentUser?.display_name || currentUser?.username || "Войти";
-  const initial = currentUser ? name.slice(0, 1).toUpperCase() : "?";
+  const initial = currentUser ? escapeHtml(name.slice(0, 1).toUpperCase()) : '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.6-3.4 3.2-5 7-5s6.4 1.6 7 5"/></svg>';
   $("#user-short-name").textContent = currentUser ? name.split(" ")[0] : "Войти";
-  $("#avatar").textContent = initial;
-  $("#profile-avatar").textContent = initial;
+  $("#avatar").innerHTML = initial;
+  $("#profile-avatar").innerHTML = initial;
   $("#profile-name").textContent = currentUser ? name : "Гость";
-  $("#profile-handle").textContent = currentUser?.username ? `@${currentUser.username}` : currentUser ? "Аккаунт Telegram" : "Войди через Telegram";
+  $("#profile-handle").textContent = currentUser?.username ? `@${currentUser.username}` : "";
   $("#profile-id").textContent = currentUser ? `Telegram ID · ${currentUser.telegram_id}` : "";
   $$(".moderator-only").forEach(item => item.classList.toggle("hidden", !currentUser?.is_moderator));
   if (!currentUser) $("#my-submissions").innerHTML = '<div class="list-empty"><button class="tonal-button" id="profile-login">Войти через Telegram</button></div>';
@@ -140,7 +146,7 @@ async function loadMySubmissions() {
   if (!currentUser) return;
   try {
     const { submissions = [] } = await api("/api/submissions/mine");
-    $("#my-submissions").innerHTML = submissions.length ? submissions.map(item => `<div class="submission-row"><div><h3>${escapeHtml(item.title)}</h3><small>${new Date(item.created_at).toLocaleDateString("ru-RU")}${item.rejection_reason ? ` · ${escapeHtml(item.rejection_reason)}` : ""}</small></div>${statusPill(item.status)}</div>`).join("") : '<div class="list-empty">Пока нет отправленных модов.</div>';
+    $("#my-submissions").innerHTML = submissions.length ? submissions.map(item => `<div class="submission-row"><div><h3>${escapeHtml(item.title)}</h3><small>${new Date(item.created_at).toLocaleDateString("ru-RU")}${item.rejection_reason ? ` · ${escapeHtml(item.rejection_reason)}` : ""}</small></div>${statusPill(item.status)}</div>`).join("") : '<div class="list-empty">Пока пусто</div>';
   } catch (error) { $("#my-submissions").innerHTML = `<div class="list-empty">${escapeHtml(error.message)}</div>`; }
 }
 
