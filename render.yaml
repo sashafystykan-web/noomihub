@@ -17,6 +17,6 @@ services:
       - key: TELEGRAM_CHANNEL_USERNAME
         sync: false
       - key: TELEGRAM_WEBHOOK_SECRET
-        generateValue: true
+        sync: false
       - key: JWT_SECRET
         generateValue: true

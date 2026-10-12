@@ -16,13 +16,19 @@ const channelUsername = process.env.TELEGRAM_CHANNEL_USERNAME || "";
 const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET || "";
 const jwtSecret = process.env.JWT_SECRET || "local-development-secret-change-me";
 let db;
+let telegramWebhookReady = false;
 
 app.use(express.json({ limit: "2mb" }));
 app.use("/static", express.static(path.join(root, "static")));
 const requireDb = (_req, res, next) => db ? next() : res.status(503).json({ error: "MongoDB is not configured" });
 app.get("/", (_req, res) => res.sendFile(path.join(root, "static", "index.html")));
-app.get("/api/health", (_req, res) => res.json({ ok: true, database: Boolean(db) }));
-app.get("/api/config", (_req, res) => res.json({ channel_username: channelUsername, bot_ready: Boolean(botUsername) }));
+app.get("/api/health", (_req, res) => res.json({
+  ok: true,
+  database: Boolean(db),
+  telegram_configured: Boolean(botToken && botUsername),
+  telegram_webhook: telegramWebhookReady,
+}));
+app.get("/api/config", (_req, res) => res.json({ channel_username: channelUsername, bot_ready: Boolean(botUsername && telegramWebhookReady) }));
 
 app.get("/api/mods", requireDb, async (req, res, next) => {
   try {
@@ -81,20 +87,31 @@ function getTelegramFile(message) {
 }
 
 async function sendBotMessage(chatId, text) {
-  if (!botToken) return;
-  await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+  if (!botToken) throw new Error("TELEGRAM_BOT_TOKEN is missing");
+  const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text }),
   });
+  const result = await response.json();
+  if (!response.ok || !result.ok) throw new Error(`Telegram sendMessage failed (${result.error_code || response.status})`);
 }
 
 async function handleUpdate(update) {
   const message = update.message;
   if (message) {
-    const match = message.text?.match(/^\/start(?:@\w+)?\s+([\w-]+)/);
-    if (match) {
+    const startCommand = message.text?.match(/^\/start(?:@\w+)?(?:\s+([\w-]+))?/);
+    if (startCommand) {
+      const match = startCommand[1];
+      if (!match) {
+        await sendBotMessage(message.chat.id, "Привет! Чтобы создать аккаунт NoomiHub, открой сайт и нажми «Войти через Telegram». Вернись сюда по ссылке с сайта и нажми Start.");
+        return;
+      }
+      if (!db) {
+        await sendBotMessage(message.chat.id, "Сайт пока не подключён к базе данных. Попробуй войти позже.");
+        return;
+      }
       const telegramUser = message.from;
       const ticket = await db.collection("auth_tickets").updateOne(
-        { ticket: match[1], expires_at: { $gt: new Date() } }, { $set: { telegram_id: telegramUser.id } },
+        { ticket: match, expires_at: { $gt: new Date() } }, { $set: { telegram_id: telegramUser.id } },
       );
       if (ticket.modifiedCount) {
         const displayName = [telegramUser.first_name, telegramUser.last_name].filter(Boolean).join(" ") || telegramUser.username || "Игрок";
@@ -122,18 +139,57 @@ async function handleUpdate(update) {
   }
 }
 
-app.post("/telegram/webhook", requireDb, async (req, res, next) => {
+async function telegramRequest(method, body = {}) {
+  const response = await fetch(`https://api.telegram.org/bot${botToken}/${method}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+  const result = await response.json();
+  if (!result.ok) throw new Error(`Telegram ${method} failed (${result.error_code}): ${result.description || "unknown error"}`);
+  return result.result;
+}
+
+async function configureTelegramWebhook() {
+  if (!botToken || !webhookSecret) {
+    console.error("Telegram webhook not configured: set TELEGRAM_BOT_TOKEN and TELEGRAM_WEBHOOK_SECRET in Render Environment");
+    return;
+  }
+  const baseUrl = process.env.RENDER_EXTERNAL_URL || process.env.SITE_URL;
+  if (!baseUrl) {
+    console.error("Telegram webhook not configured: Render did not provide RENDER_EXTERNAL_URL and SITE_URL is empty");
+    return;
+  }
+  const webhookUrl = `${baseUrl.replace(/\/$/, "")}/telegram/webhook`;
+  try {
+    await telegramRequest("setWebhook", {
+      url: webhookUrl,
+      secret_token: webhookSecret,
+      allowed_updates: ["message", "channel_post", "edited_channel_post"],
+      drop_pending_updates: false,
+    });
+    telegramWebhookReady = true;
+    console.log(`Telegram webhook configured: ${webhookUrl}`);
+  } catch (error) {
+    telegramWebhookReady = false;
+    console.error(`Telegram webhook setup failed: ${error.message}`);
+  }
+}
+
+app.post("/telegram/webhook", async (req, res, next) => {
   const expected = Buffer.from(webhookSecret);
   const actual = Buffer.from(req.get("x-telegram-bot-api-secret-token") || "");
   if (!webhookSecret || expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
     return res.status(403).json({ error: "Invalid Telegram webhook secret" });
   }
-  try { await handleUpdate(req.body); res.json({ ok: true }); }
+  try {
+    await handleUpdate(req.body);
+    console.log(`Telegram update handled: ${req.body.update_id ?? "unknown"}`);
+    res.json({ ok: true });
+  }
   catch (error) { next(error); }
 });
 
 app.use((error, _req, res, _next) => {
-  console.error(`Request failed: ${error.name}`);
+  console.error(`Request failed: ${error.message}`);
   res.status(500).json({ error: "Internal server error" });
 });
 
@@ -150,7 +206,10 @@ async function start() {
     ]);
     console.log("MongoDB connected");
   } else console.warn("MONGODB_URI missing; database routes return 503");
-  app.listen(port, "0.0.0.0", () => console.log(`NoomiHub listening on ${port}`));
+  app.listen(port, "0.0.0.0", async () => {
+    console.log(`NoomiHub listening on ${port}`);
+    await configureTelegramWebhook();
+  });
 }
 
 start().catch((error) => { console.error(`Startup failed: ${error.name}`); process.exit(1); });

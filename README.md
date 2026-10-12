@@ -2,7 +2,7 @@
 
 Стартовый фанатский каталог модов NoomiClone. Backend — **Node.js + Express**; интерфейс адаптивный, в духе Material You. MongoDB хранит аккаунты и индекс модов, Telegram — исходные файлы.
 
-## Запуск локально
+## Локальный запуск
 
 Нужен Node.js 20+ и доступная MongoDB (можно MongoDB Atlas).
 
@@ -12,7 +12,7 @@ npm install
 cp .env.example .env
 ```
 
-Заполни `.env`, затем запусти `npm run dev` и открой http://localhost:8000. Без `MONGODB_URI` сервер стартует, но API каталога и регистрации ответит ошибкой конфигурации.
+Заполни `.env`, включая публичный HTTPS `SITE_URL`, затем запусти `npm run dev`. Telegram не может отправлять webhook на `localhost`; для локальной проверки нужен публичный HTTPS-адрес. На Render приложение использует публичный адрес сервиса автоматически.
 
 ## Telegram
 
@@ -28,24 +28,16 @@ cp .env.example .env
 Описание: Неоновый набор оформления для персонажа.
 ```
 
-Допустимы английские ключи `Title`, `Version`, `Type`, `Tags`, `Description`. Webhook сам сохранит метаданные, Telegram `file_id`, имя и размер в MongoDB. Изменение подписи к посту обновит карточку.
+Допустимы английские ключи `Title`, `Version`, `Type`, `Tags`, `Description`. Webhook сохраняет метаданные, Telegram `file_id`, имя и размер в MongoDB. Изменение подписи к посту обновит карточку.
 
-Кнопка скачивания открывает пост публичного канала. Файл по 60 МБ бот не проксирует на сайт: в обычном Telegram Bot API скачивание ограничено 20 МБ. Через пост канала посетитель скачивает его из Telegram.
+Кнопка скачивания открывает пост публичного канала. Файл по 60 МБ бот не проксирует на сайт: Bot API ограничивает скачивание обычным ботом, поэтому посетитель скачивает файл из Telegram.
 
 ## Render
 
 1. Создай GitHub-репозиторий из этой папки, подключи его к Render как Web Service. `render.yaml` задаёт Node runtime, запуск и health check.
-2. Создай MongoDB Atlas cluster. Добавь доступ для подключения Render и скопируй connection string.
-3. В Render → Environment добавь `MONGODB_URI`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, `TELEGRAM_CHANNEL_ID`, `TELEGRAM_CHANNEL_USERNAME`. Сгенерируй длинный `JWT_SECRET` и `TELEGRAM_WEBHOOK_SECRET` (только буквы, цифры, `_` и `-`).
-4. После первого деплоя установи webhook:
+2. Создай MongoDB Atlas cluster и скопируй connection string.
+3. В Render → Environment добавь `MONGODB_URI`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, `TELEGRAM_CHANNEL_ID`, `TELEGRAM_CHANNEL_USERNAME`, `TELEGRAM_WEBHOOK_SECRET` и `JWT_SECRET`. Для `TELEGRAM_WEBHOOK_SECRET` сгенерируй hex-строку командой `openssl rand -hex 32`; Telegram принимает в ней только буквы, цифры, `_` и `-`. Для `JWT_SECRET` используй отдельную случайную строку.
+4. Сохрани переменные и дождись нового деплоя. При старте приложение само зарегистрирует webhook на URL Render. Не запускай отдельно `setWebhook` и не настраивай long polling: используется только webhook.
+5. Открой `/api/health`. Должно быть `{"ok":true,"database":true,"telegram_configured":true,"telegram_webhook":true}`. Затем нажми вход на сайте, открой бота по ссылке и нажми Start. Опубликуй тестовый архив в канале.
 
-```bash
-curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
-  -d "url=https://<render-service>.onrender.com/telegram/webhook" \
-  -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>" \
-  -d 'allowed_updates=["message","channel_post","edited_channel_post"]'
-```
-
-5. Открой `/api/health` — должно быть `{"ok":true,"database":true}`. Нажми вход на сайте, затем Start у бота. Опубликуй тестовый архив в канале.
-
-Не публикуй токен бота или URI MongoDB в репозитории. На момент первой настройки ID канала можно узнать из Telegram update, полученного ботом до установки webhook.
+Не публикуй токен бота или URI MongoDB в репозитории.
